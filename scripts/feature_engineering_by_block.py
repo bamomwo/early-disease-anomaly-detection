@@ -6,6 +6,7 @@ import logging
 from pathlib import Path
 import scipy.signal
 from scipy.signal import butter, filtfilt
+import scipy.interpolate
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -143,6 +144,92 @@ def extract_bvp_morph_features(df, window_size, buffer=2, fs=64):
     logging.info("Finished extracting BVP morphological features.")
     return pd.DataFrame(results, index=index, columns=columns)
 
+def process_data_block(df_block, window_size):
+    """
+    Processes a single contiguous data block to engineer features.
+    """
+    logging.info(f"Processing a data block of size {len(df_block)} from {df_block.index.min()} to {df_block.index.max()}")
+    
+    # --- Create a dense DataFrame by upsampling to the BVP timeline ---
+    # 1. Get the clean BVP timeline (where BVP is not NaN)
+    bvp_timeline_df = df_block[['BVP']].dropna()
+    
+    # 2. Interpolate other sensors to this master timeline
+    sensors_to_interpolate = ['ACC_X', 'ACC_Y', 'ACC_Z', 'TEMP', 'HR', 'EDA', 'IBI']
+    for sensor in sensors_to_interpolate:
+        # Use existing data for interpolation
+        source_data = df_block[[sensor]].dropna()
+        if source_data.empty:
+            bvp_timeline_df[sensor] = np.nan
+            continue
+        
+        # Create an interpolator function
+        interpolator = scipy.interpolate.interp1d(
+            source_data.index.astype(np.int64),
+            source_data[sensor],
+            kind='linear',
+            bounds_error=False,
+            fill_value='extrapolate'
+        )
+        
+        # Apply interpolator to the BVP timeline
+        bvp_timeline_df[sensor] = interpolator(bvp_timeline_df.index.astype(np.int64))
+
+    # Now, `dense_df` is our new gold standard for this block
+    dense_df = bvp_timeline_df
+    logging.info(f"Created dense data block of size {len(dense_df)}.")
+
+    # --- Log dropped data statistics ---
+    dropped_rows = df_block[df_block['BVP'].isna()]
+    sensors = ['ACC_X', 'ACC_Y', 'ACC_Z', 'TEMP', 'HR', 'EDA', 'IBI']
+    dropped_stats = {sensor: dropped_rows[sensor].notna().sum() for sensor in sensors}
+    logging.info(f"Dropped {len(dropped_rows)} rows due to missing BVP.")
+    for sensor, count in dropped_stats.items():
+        logging.info(f"  Of these, {count} rows had valid data for {sensor}.")
+
+    window = f"{window_size}s"
+    
+    # HRV features
+    ibi = dense_df['IBI'].resample(window).apply(list)
+    hrv_features = ibi.apply(lambda x: calculate_hrv_features(pd.Series(x)))
+    hrv_df = pd.DataFrame(hrv_features.tolist(), index=hrv_features.index, columns=['rmssd', 'sdnn', 'pnn50'])
+    
+    # Temperature features
+    temp_mean = dense_df['TEMP'].resample(window).mean()
+    temp_std = dense_df['TEMP'].resample(window).std()
+    temp_max = dense_df['TEMP'].resample(window).max()
+    temp_min = dense_df['TEMP'].resample(window).min()
+    temp_df = pd.concat([temp_mean, temp_std, temp_max, temp_min], axis=1)
+    temp_df.columns = ['temp_mean', 'temp_std', 'temp_max', 'temp_min']
+
+    # Motion features
+    acc_mag = np.sqrt(dense_df['ACC_X']**2 + dense_df['ACC_Y']**2 + dense_df['ACC_Z']**2)
+    acc_mean = acc_mag.resample(window).mean()
+    acc_std = acc_mag.resample(window).std()
+    acc_max = acc_mag.resample(window).max()
+    acc_df = pd.concat([acc_mean, acc_std, acc_max], axis=1)
+    acc_df.columns = ['acc_mean', 'acc_std', 'acc_magnitude']
+
+    # Context-aware features
+    epsilon = 1e-6
+    # Note: We now use acc_mag directly as it's dense
+    eda_acc_ratio = dense_df['EDA'] / (acc_mag + epsilon)
+    hr_acc_ratio = dense_df['HR'] / (acc_mag + epsilon)
+    
+    eda_acc_mean = eda_acc_ratio.resample(window).mean()
+    eda_acc_std = eda_acc_ratio.resample(window).std()
+    hr_acc_mean = hr_acc_ratio.resample(window).mean()
+    hr_acc_std = hr_acc_ratio.resample(window).std()
+    context_df = pd.concat([eda_acc_mean, eda_acc_std, hr_acc_mean, hr_acc_std], axis=1)
+    context_df.columns = ['eda_acc_mean', 'eda_acc_std', 'hr_acc_mean', 'hr_acc_std']
+
+    # BVP morphological features - uses the original sparse df for bvp extraction
+    bvp_morph_df = extract_bvp_morph_features(df_block, window_size, buffer=2, fs=64)
+
+    # Merge all features
+    features_df = pd.concat([hrv_df, temp_df, acc_df, context_df, bvp_morph_df], axis=1)
+    return features_df
+
 def process_participant_file(file_path, window_size, output_dir):
     """
     Processes a single participant file to engineer features.
@@ -150,72 +237,49 @@ def process_participant_file(file_path, window_size, output_dir):
     logging.info(f"Processing file: {file_path}")
     try:
         df = pd.read_csv(file_path, parse_dates=['timestamp'])
+        df = df.set_index('timestamp')
     except Exception as e:
         logging.error(f"Could not read {file_path}: {e}")
         return
 
-    df = df.set_index('timestamp')
     logging.info(f"Data loaded. {len(df)} rows.")
-    
-    # Resample and apply feature engineering functions
-    window = f"{window_size}s"
-    logging.info(f"Extracting features with window size {window_size}s.")
-    
-    # HRV features
-    ibi = df['IBI'].resample(window).apply(list)
-    hrv_features = ibi.apply(lambda x: calculate_hrv_features(pd.Series(x)))
-    hrv_df = pd.DataFrame(hrv_features.tolist(), index=hrv_features.index, columns=['rmssd', 'sdnn', 'pnn50'])
-    logging.info("HRV features extracted.")
-    
-    # Temperature features
-    temp_mean = df['TEMP'].resample(window).mean()
-    temp_std = df['TEMP'].resample(window).std()
-    temp_max = df['TEMP'].resample(window).max()
-    temp_min = df['TEMP'].resample(window).min()
-    temp_df = pd.concat([temp_mean, temp_std, temp_max, temp_min], axis=1)
-    temp_df.columns = ['temp_mean', 'temp_std', 'temp_max', 'temp_min']
-    logging.info("Temperature features extracted.")
-    
-    # Motion features
-    acc_x_mean = df['ACC_X'].resample(window).mean()
-    acc_y_mean = df['ACC_Y'].resample(window).mean()
-    acc_z_mean = df['ACC_Z'].resample(window).mean()
-    acc_mag = np.sqrt(df['ACC_X']**2 + df['ACC_Y']**2 + df['ACC_Z']**2)
-    acc_mean = acc_mag.resample(window).mean()
-    acc_std = acc_mag.resample(window).std()
-    acc_max = acc_mag.resample(window).max()
-    acc_df = pd.concat([acc_mean, acc_std, acc_max], axis=1)
-    acc_df.columns = ['acc_mean', 'acc_std', 'acc_magnitude']
-    logging.info("Motion features extracted.")
 
-    # --- Context-aware features: EDA/ACC and HR/ACC ratios ---
-    epsilon = 1e-6
-    acc_mask = df[['ACC_X', 'ACC_Y', 'ACC_Z']].notnull().any(axis=1)
-    acc_mag_full = np.sqrt(df['ACC_X'].fillna(0)**2 + df['ACC_Y'].fillna(0)**2 + df['ACC_Z'].fillna(0)**2)
-    acc_mag_full[~acc_mask] = np.nan
-    eda_interp = df['EDA'].interpolate(method='time').reindex(df.index, method='nearest')
-    hr_interp = df['HR'].interpolate(method='time').reindex(df.index, method='nearest')
-    eda_acc_ratio = eda_interp / (acc_mag_full + epsilon)
-    hr_acc_ratio = hr_interp / (acc_mag_full + epsilon)
-    eda_acc_mean = eda_acc_ratio.resample(window).mean()
-    eda_acc_std = eda_acc_ratio.resample(window).std()
-    hr_acc_mean = hr_acc_ratio.resample(window).mean()
-    hr_acc_std = hr_acc_ratio.resample(window).std()
-    context_df = pd.concat([eda_acc_mean, eda_acc_std, hr_acc_mean, hr_acc_std], axis=1)
-    context_df.columns = ['eda_acc_mean', 'eda_acc_std', 'hr_acc_mean', 'hr_acc_std']
-    logging.info("Context-aware features extracted.")
+    # --- Block-based processing ---
+    # Identify contiguous blocks of data by finding large time gaps
+    df_sorted = df.sort_index()
+    time_diffs = df_sorted.index.to_series().diff()
+    
+    # A new block starts where the gap is larger than the window size (a sensible threshold)
+    block_starts = time_diffs > pd.Timedelta(seconds=window_size)
+    block_ids = block_starts.cumsum()
+    
+    all_features = []
+    
+    logging.info(f"Found {block_ids.nunique()} data blocks to process.")
 
-    # BVP morphological features
-    bvp_morph_df = extract_bvp_morph_features(df, window_size, buffer=2, fs=64)
+    for block_id in range(block_ids.max() + 1):
+        block_df = df_sorted[block_ids == block_id]
+        
+        # Skip small, noisy blocks
+        if len(block_df) < window_size * 32: # Require at least one window of ACC data
+            logging.info(f"Skipping block {block_id} due to small size: {len(block_df)} rows.")
+            continue
+            
+        block_features = process_data_block(block_df, window_size)
+        all_features.append(block_features)
 
-    # Merge all features
-    features_df = pd.concat([hrv_df, temp_df, acc_df, context_df, bvp_morph_df], axis=1)
-    logging.info(f"All features merged. Shape: {features_df.shape}")
+    if not all_features:
+        logging.warning("No data blocks were processed for this participant.")
+        return
+        
+    # Combine features from all blocks
+    final_features_df = pd.concat(all_features)
+    logging.info(f"All features merged. Shape: {final_features_df.shape}")
 
     # Save to output directory
     output_filename = Path(file_path).stem + "_features.csv"
     output_path = os.path.join(output_dir, output_filename)
-    features_df.to_csv(output_path)
+    final_features_df.to_csv(output_path)
     logging.info(f"Saved features to {output_path}")
 
 def main():
