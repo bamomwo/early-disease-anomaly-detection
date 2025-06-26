@@ -145,7 +145,8 @@ def extract_bvp_morph_features(df, window_size, buffer=2, fs=64):
 
 def process_participant_file(file_path, window_size, output_dir):
     """
-    Processes a single participant file to engineer features.
+    Processes a single participant file to engineer features using windowed aggregation (no block splitting).
+    For each window, BVP NaNs are dropped before morphological feature extraction. Windows with large BVP gaps or too few samples are dropped.
     """
     logging.info(f"Processing file: {file_path}")
     try:
@@ -156,62 +157,84 @@ def process_participant_file(file_path, window_size, output_dir):
 
     df = df.set_index('timestamp')
     logging.info(f"Data loaded. {len(df)} rows.")
-    
-    # Resample and apply feature engineering functions
+
     window = f"{window_size}s"
-    logging.info(f"Extracting features with window size {window_size}s.")
-    
-    # HRV features
-    ibi = df['IBI'].resample(window).apply(list)
-    hrv_features = ibi.apply(lambda x: calculate_hrv_features(pd.Series(x)))
-    hrv_df = pd.DataFrame(hrv_features.tolist(), index=hrv_features.index, columns=['rmssd', 'sdnn', 'pnn50'])
-    logging.info("HRV features extracted.")
-    
-    # Temperature features
-    temp_mean = df['TEMP'].resample(window).mean()
-    temp_std = df['TEMP'].resample(window).std()
-    temp_max = df['TEMP'].resample(window).max()
-    temp_min = df['TEMP'].resample(window).min()
-    temp_df = pd.concat([temp_mean, temp_std, temp_max, temp_min], axis=1)
-    temp_df.columns = ['temp_mean', 'temp_std', 'temp_max', 'temp_min']
-    logging.info("Temperature features extracted.")
-    
-    # Motion features
-    acc_x_mean = df['ACC_X'].resample(window).mean()
-    acc_y_mean = df['ACC_Y'].resample(window).mean()
-    acc_z_mean = df['ACC_Z'].resample(window).mean()
-    acc_mag = np.sqrt(df['ACC_X']**2 + df['ACC_Y']**2 + df['ACC_Z']**2)
-    acc_mean = acc_mag.resample(window).mean()
-    acc_std = acc_mag.resample(window).std()
-    acc_max = acc_mag.resample(window).max()
-    acc_df = pd.concat([acc_mean, acc_std, acc_max], axis=1)
-    acc_df.columns = ['acc_mean', 'acc_std', 'acc_magnitude']
-    logging.info("Motion features extracted.")
+    min_bvp_samples = window_size * 32 // 2  # Require at least half the expected BVP samples (32Hz)
+    max_bvp_gap = pd.Timedelta(seconds=2)    # If any gap >2s in a window, drop the window
+    dropped_windows = 0
+    feature_rows = []
+    window_starts = pd.date_range(start=df.index.min().floor(window), end=df.index.max().ceil(window), freq=window)
 
-    # --- Context-aware features: EDA/ACC and HR/ACC ratios ---
-    epsilon = 1e-6
-    acc_mask = df[['ACC_X', 'ACC_Y', 'ACC_Z']].notnull().any(axis=1)
-    acc_mag_full = np.sqrt(df['ACC_X'].fillna(0)**2 + df['ACC_Y'].fillna(0)**2 + df['ACC_Z'].fillna(0)**2)
-    acc_mag_full[~acc_mask] = np.nan
-    eda_interp = df['EDA'].interpolate(method='time').reindex(df.index, method='nearest')
-    hr_interp = df['HR'].interpolate(method='time').reindex(df.index, method='nearest')
-    eda_acc_ratio = eda_interp / (acc_mag_full + epsilon)
-    hr_acc_ratio = hr_interp / (acc_mag_full + epsilon)
-    eda_acc_mean = eda_acc_ratio.resample(window).mean()
-    eda_acc_std = eda_acc_ratio.resample(window).std()
-    hr_acc_mean = hr_acc_ratio.resample(window).mean()
-    hr_acc_std = hr_acc_ratio.resample(window).std()
-    context_df = pd.concat([eda_acc_mean, eda_acc_std, hr_acc_mean, hr_acc_std], axis=1)
-    context_df.columns = ['eda_acc_mean', 'eda_acc_std', 'hr_acc_mean', 'hr_acc_std']
-    logging.info("Context-aware features extracted.")
+    for start in window_starts:
+        win_start = start
+        win_end = start + pd.Timedelta(seconds=window_size)
+        window_df = df[(df.index >= win_start) & (df.index < win_end)]
+        if window_df.empty:
+            continue
 
-    # BVP morphological features
-    bvp_morph_df = extract_bvp_morph_features(df, window_size, buffer=2, fs=64)
+        # --- BVP morphological features ---
+        bvp_win = window_df['BVP'].dropna()
+        # Check for enough BVP samples
+        if len(bvp_win) < min_bvp_samples:
+            dropped_windows += 1
+            feature_rows.append([np.nan]*20)  # 20 = total number of features below
+            continue
+        # Check for large time gaps in BVP
+        bvp_time_diffs = bvp_win.index.to_series().diff()
+        if (bvp_time_diffs > max_bvp_gap).any():
+            dropped_windows += 1
+            feature_rows.append([np.nan]*20)
+            continue
+        # Extract BVP morphological features for this window
+        bvp_morph = extract_bvp_morph_features(window_df, window_size, buffer=0, fs=64).iloc[0].tolist()
 
-    # Merge all features
-    features_df = pd.concat([hrv_df, temp_df, acc_df, context_df, bvp_morph_df], axis=1)
-    logging.info(f"All features merged. Shape: {features_df.shape}")
+        # --- Other features (resample as before) ---
+        temp_mean = window_df['TEMP'].mean()
+        temp_std = window_df['TEMP'].std()
+        temp_max = window_df['TEMP'].max()
+        temp_min = window_df['TEMP'].min()
+        acc_mag = np.sqrt(window_df['ACC_X']**2 + window_df['ACC_Y']**2 + window_df['ACC_Z']**2)
+        acc_mean = acc_mag.mean()
+        acc_std = acc_mag.std()
+        acc_max = acc_mag.max()
+        # Context-aware features (interpolate EDA/HR to ACC timestamps, then aggregate)
+        acc_mask = window_df[['ACC_X', 'ACC_Y', 'ACC_Z']].notnull().any(axis=1)
+        acc_mag_full = np.sqrt(window_df['ACC_X'].fillna(0)**2 + window_df['ACC_Y'].fillna(0)**2 + window_df['ACC_Z'].fillna(0)**2)
+        acc_mag_full[~acc_mask] = np.nan
+        eda_interp = window_df['EDA'].interpolate(method='time').reindex(window_df.index, method='nearest')
+        hr_interp = window_df['HR'].interpolate(method='time').reindex(window_df.index, method='nearest')
+        epsilon = 1e-6
+        eda_acc_ratio = eda_interp / (acc_mag_full + epsilon)
+        hr_acc_ratio = hr_interp / (acc_mag_full + epsilon)
+        eda_acc_mean = eda_acc_ratio.mean()
+        eda_acc_std = eda_acc_ratio.std()
+        hr_acc_mean = hr_acc_ratio.mean()
+        hr_acc_std = hr_acc_ratio.std()
+        # HRV features
+        ibi_list = window_df['IBI'].dropna().tolist()
+        hrv_rmssd, hrv_sdnn, hrv_pnn50 = calculate_hrv_features(pd.Series(ibi_list))
+        # Collect all features for this window
+        feature_rows.append([
+            hrv_rmssd, hrv_sdnn, hrv_pnn50,
+            temp_mean, temp_std, temp_max, temp_min,
+            acc_mean, acc_std, acc_max,
+            eda_acc_mean, eda_acc_std, hr_acc_mean, hr_acc_std,
+            *bvp_morph
+        ])
 
+    # Build DataFrame
+    columns = [
+        'rmssd', 'sdnn', 'pnn50',
+        'temp_mean', 'temp_std', 'temp_max', 'temp_min',
+        'acc_mean', 'acc_std', 'acc_magnitude',
+        'eda_acc_mean', 'eda_acc_std', 'hr_acc_mean', 'hr_acc_std',
+        'bvp_systolic_amp_mean', 'bvp_systolic_amp_std',
+        'bvp_pulse_width_mean', 'bvp_pulse_width_std',
+        'bvp_rise_time_mean', 'bvp_rise_time_std',
+        'bvp_auc_mean', 'bvp_auc_std',
+    ]
+    features_df = pd.DataFrame(feature_rows, columns=columns, index=window_starts[:len(feature_rows)])
+    logging.info(f"Dropped {dropped_windows} windows due to insufficient BVP data or large gaps.")
     # Save to output directory
     output_filename = Path(file_path).stem + "_features.csv"
     output_path = os.path.join(output_dir, output_filename)
