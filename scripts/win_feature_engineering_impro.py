@@ -16,7 +16,7 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(
 class BiosignalPreprocessor:
     """
     Optimized preprocessing pipeline for multimodal biosignal data
-    using window-based aggregation without resampling.
+    using session-aware window-based aggregation without resampling.
     """
     
     def __init__(self, window_size: int = 10, min_data_threshold: float = 0.6):
@@ -36,10 +36,15 @@ class BiosignalPreprocessor:
             'ACC_X': 32, 'ACC_Y': 32, 'ACC_Z': 32
         }
         
-    def load_and_merge_sessions(self, participant_dir: str) -> pd.DataFrame:
+    def load_and_merge_sessions(self, participant_dir: str, max_sessions: Optional[int] = None) -> pd.DataFrame:
         """
-        Load and merge all sessions for a participant without resampling.
+        Load and merge sessions for a participant without resampling.
         Maintains original timestamps and handles gaps properly.
+        Each session is kept separate for proper windowing.
+        
+        Args:
+            participant_dir: Path to participant directory
+            max_sessions: Maximum number of sessions to process (None for all sessions)
         """
         logging.info(f"Processing participant directory: {participant_dir}")
         
@@ -47,7 +52,16 @@ class BiosignalPreprocessor:
         session_dirs = [d for d in os.listdir(participant_dir) 
                        if os.path.isdir(os.path.join(participant_dir, d))]
         
-        for session_dir in sorted(session_dirs):
+        # Sort sessions to ensure consistent ordering
+        session_dirs = sorted(session_dirs)
+        
+        # Limit sessions if specified
+        if max_sessions is not None:
+            original_count = len(session_dirs)
+            session_dirs = session_dirs[:max_sessions]
+            logging.info(f"Limited to {len(session_dirs)} sessions out of {original_count} available")
+        
+        for session_dir in session_dirs:
             session_path = os.path.join(participant_dir, session_dir)
             session_data = self._load_session_data(session_path)
             
@@ -60,15 +74,17 @@ class BiosignalPreprocessor:
         if not all_data:
             raise ValueError(f"No valid session data found in {participant_dir}")
         
-        # Concatenate all sessions and sort by timestamp
+        # Concatenate all sessions but keep session information
         merged_data = pd.concat(all_data, ignore_index=True)
-        merged_data = merged_data.sort_values('timestamp').reset_index(drop=True)
+        # Sort by session first, then by timestamp within each session
+        merged_data = merged_data.sort_values(['session', 'timestamp']).reset_index(drop=True)
         
         logging.info(f"Merged data shape: {merged_data.shape}")
+        logging.info(f"Sessions included: {merged_data['session'].unique()}")
         return merged_data
     
     def _load_session_data(self, session_path: str) -> Optional[pd.DataFrame]:
-        """Load data from a single session directory."""
+        """Load data from a single session directory with proper format handling."""
         sensor_files = {
             'HR': 'HR.csv', 'IBI': 'IBI.csv', 'EDA': 'EDA.csv',
             'TEMP': 'TEMP.csv', 'BVP': 'BVP.csv', 'ACC': 'ACC.csv'
@@ -83,22 +99,115 @@ class BiosignalPreprocessor:
                 continue
                 
             try:
-                df = pd.read_csv(file_path)
-                
-                # Handle different file formats
-                if sensor == 'ACC':
-                    # ACC file has X, Y, Z columns
-                    for i, axis in enumerate(['X', 'Y', 'Z']):
-                        acc_data = df.iloc[:, [0, i+1]].copy()  # timestamp, axis_value
-                        acc_data.columns = ['timestamp', f'ACC_{axis}']
-                        acc_data['sensor'] = f'ACC_{axis}'
-                        session_data.append(acc_data)
-                else:
-                    # Other sensors have single value column
-                    df.columns = ['timestamp', sensor]
-                    df['sensor'] = sensor
-                    session_data.append(df)
+                if sensor == 'IBI':
+                    # IBI has different format: 
+                    # First row: start_timestamp, "IBI"
+                    # Subsequent rows: time_offset_seconds, ibi_value
+                    with open(file_path, 'r') as f:
+                        lines = f.readlines()
                     
+                    if len(lines) < 2:
+                        logging.warning(f"IBI file {file_path} has insufficient data")
+                        continue
+                    
+                    # Parse header row
+                    header_parts = lines[0].strip().split(',')
+                    start_timestamp = float(header_parts[0])
+                    
+                    # Parse data rows
+                    timestamps = []
+                    ibi_values = []
+                    
+                    for line in lines[1:]:
+                        try:
+                            parts = line.strip().split(',')
+                            if len(parts) >= 2:
+                                time_offset = float(parts[0])
+                                ibi_value = float(parts[1])
+                                
+                                # Calculate absolute timestamp
+                                absolute_timestamp = start_timestamp + time_offset
+                                timestamps.append(absolute_timestamp)
+                                ibi_values.append(ibi_value)
+                        except (ValueError, IndexError):
+                            continue
+                    
+                    if not timestamps:
+                        logging.warning(f"No valid IBI data found in {file_path}")
+                        continue
+                    
+                    # Create dataframe
+                    df = pd.DataFrame({
+                        'timestamp': timestamps,
+                        'IBI': ibi_values,
+                        'sensor': 'IBI'
+                    })
+                    session_data.append(df)
+                
+                elif sensor == 'ACC':
+                    # ACC file format: first row is timestamps, second row is sampling rates
+                    with open(file_path, 'r') as f:
+                        lines = f.readlines()
+                    
+                    # Parse start timestamp and sampling rate
+                    start_timestamps = [float(x.strip()) for x in lines[0].split(',')]
+                    sampling_rates = [float(x.strip()) for x in lines[1].split(',')]
+                    
+                    # Use the first timestamp as start time and first sampling rate
+                    start_time = start_timestamps[0]
+                    sampling_rate = sampling_rates[0]
+                    
+                    # Read the actual data (skip first 2 rows)
+                    acc_data = pd.read_csv(file_path, skiprows=2, header=None)
+                    acc_data.columns = ['ACC_X', 'ACC_Y', 'ACC_Z']
+                    
+                    # Generate timestamps
+                    n_samples = len(acc_data)
+                    timestamps = start_time + np.arange(n_samples) / sampling_rate
+                    
+                    # Create separate entries for each axis
+                    for i, axis in enumerate(['X', 'Y', 'Z']):
+                        axis_df = pd.DataFrame({
+                            'timestamp': timestamps,
+                            f'ACC_{axis}': acc_data.iloc[:, i],
+                            'sensor': f'ACC_{axis}'
+                        })
+                        session_data.append(axis_df)
+                
+                else:
+                    # HR, EDA, TEMP, BVP format: first row is timestamp, second row is sampling rate
+                    with open(file_path, 'r') as f:
+                        lines = f.readlines()
+                    
+                    # Parse start timestamp and sampling rate
+                    start_time = float(lines[0].strip())
+                    sampling_rate = float(lines[1].strip())
+                    
+                    # Read the actual data (skip first 2 rows)
+                    sensor_data = []
+                    for line in lines[2:]:
+                        try:
+                            value = float(line.strip())
+                            sensor_data.append(value)
+                        except ValueError:
+                            continue
+                    
+                    if not sensor_data:
+                        logging.warning(f"No valid data found in {file_path}")
+                        continue
+                    
+                    # Generate timestamps
+                    n_samples = len(sensor_data)
+                    timestamps = start_time + np.arange(n_samples) / sampling_rate
+                    
+                    # Create dataframe
+                    df = pd.DataFrame({
+                        'timestamp': timestamps,
+                        sensor: sensor_data,
+                        'sensor': sensor
+                    })
+                    session_data.append(df)
+                
             except Exception as e:
                 logging.error(f"Error loading {file_path}: {e}")
                 continue
@@ -111,10 +220,30 @@ class BiosignalPreprocessor:
         combined['timestamp'] = pd.to_datetime(combined['timestamp'], unit='s')
         
         # Pivot to wide format
-        pivot_data = combined.pivot_table(
+        # Get the value column (should be the column that's not 'timestamp' or 'sensor')
+        value_cols = [col for col in combined.columns if col not in ['timestamp', 'sensor']]
+        
+        # Melt the dataframe to handle multiple value columns properly
+        melted_data = []
+        for _, row in combined.iterrows():
+            for col in value_cols:
+                if not pd.isna(row[col]):
+                    melted_data.append({
+                        'timestamp': row['timestamp'],
+                        'sensor': row['sensor'],
+                        'value': row[col]
+                    })
+        
+        if not melted_data:
+            return None
+        
+        melted_df = pd.DataFrame(melted_data)
+        
+        # Pivot to wide format
+        pivot_data = melted_df.pivot_table(
             index='timestamp', 
             columns='sensor', 
-            values=combined.columns[1],  # The value column
+            values='value',
             aggfunc='first'
         ).reset_index()
         
@@ -122,12 +251,44 @@ class BiosignalPreprocessor:
     
     def extract_window_features(self, data: pd.DataFrame) -> pd.DataFrame:
         """
-        Extract features using window-based aggregation.
-        Each window is processed independently with quality checks.
+        Extract features using session-aware window-based aggregation.
+        Windows are generated separately for each session to prevent
+        cross-session contamination.
         """
-        data = data.set_index('timestamp')
+        # Process each session separately
+        all_features = []
         
-        # Generate windows
+        for session in data['session'].unique():
+            logging.info(f"Processing session: {session}")
+            session_data = data[data['session'] == session].copy()
+            session_features = self._extract_session_features(session_data, session)
+            
+            if not session_features.empty:
+                all_features.append(session_features)
+                logging.info(f"Extracted {len(session_features)} windows from session {session}")
+        
+        if not all_features:
+            raise ValueError("No valid features extracted from any session")
+        
+        # Combine all session features
+        combined_features = pd.concat(all_features, ignore_index=True)
+        logging.info(f"Total features extracted: {len(combined_features)} windows across {len(all_features)} sessions")
+        
+        return combined_features
+    
+    def _extract_session_features(self, session_data: pd.DataFrame, session_id: str) -> pd.DataFrame:
+        """
+        Extract features from a single session using window-based aggregation.
+        This ensures windows never span across sessions.
+        """
+        # Remove session column for processing, but keep session_id for later
+        data = session_data.drop(columns=['session']).set_index('timestamp')
+        
+        if data.empty:
+            logging.warning(f"No data found for session {session_id}")
+            return pd.DataFrame()
+        
+        # Generate windows for this session only
         start_time = data.index.min().floor(f'{self.window_size}s')
         end_time = data.index.max().ceil(f'{self.window_size}s')
         windows = pd.date_range(start=start_time, end=end_time, 
@@ -136,7 +297,7 @@ class BiosignalPreprocessor:
         features_list = []
         valid_windows = 0
         
-        logging.info(f"Processing {len(windows)} windows...")
+        logging.info(f"Processing {len(windows)} windows for session {session_id}...")
         
         for i, window_start in enumerate(windows[:-1]):
             window_end = window_start + pd.Timedelta(seconds=self.window_size)
@@ -155,16 +316,19 @@ class BiosignalPreprocessor:
             )
             
             if window_features is not None:
+                # Add session information to the features
+                window_features['session'] = session_id
                 features_list.append(window_features)
                 valid_windows += 1
             
             if (i + 1) % 100 == 0:
-                logging.info(f"Processed {i + 1}/{len(windows)} windows")
+                logging.info(f"Processed {i + 1}/{len(windows)} windows for session {session_id}")
         
-        logging.info(f"Valid windows: {valid_windows}/{len(windows)}")
+        logging.info(f"Valid windows for session {session_id}: {valid_windows}/{len(windows)}")
         
         if not features_list:
-            raise ValueError("No valid windows found for feature extraction")
+            logging.warning(f"No valid windows found for session {session_id}")
+            return pd.DataFrame()
         
         return pd.DataFrame(features_list)
     
@@ -202,6 +366,18 @@ class BiosignalPreprocessor:
                     hrv_features = self._calculate_hrv_features(ibi_values)
                     features.update(hrv_features)
             
+            # Heart Rate Features
+            if 'HR' in window_data.columns:
+                hr_data = window_data['HR'].dropna()
+                if len(hr_data) > 0:
+                    features.update({
+                        'hr_mean': hr_data.mean(),
+                        'hr_std': hr_data.std(),
+                        'hr_min': hr_data.min(),
+                        'hr_max': hr_data.max(),
+                        'hr_range': hr_data.max() - hr_data.min()
+                    })
+            
             # Temperature Features
             if 'TEMP' in window_data.columns:
                 temp_data = window_data['TEMP'].dropna()
@@ -228,7 +404,8 @@ class BiosignalPreprocessor:
                         'eda_mean': eda_data.mean(),
                         'eda_std': eda_data.std(),
                         'eda_max': eda_data.max(),
-                        'eda_min': eda_data.min()
+                        'eda_min': eda_data.min(),
+                        'eda_range': eda_data.max() - eda_data.min()
                     })
             
             # BVP Morphological Features (optimized)
@@ -252,6 +429,9 @@ class BiosignalPreprocessor:
         """Calculate HRV features from IBI data."""
         ibi_values = ibi_series.values
         
+        # Basic statistics
+        mean_ibi = np.mean(ibi_values)
+        
         # RMSSD
         diff_ibi = np.diff(ibi_values)
         rmssd = np.sqrt(np.mean(diff_ibi ** 2)) if len(diff_ibi) > 0 else np.nan
@@ -263,6 +443,7 @@ class BiosignalPreprocessor:
         pnn50 = (np.abs(diff_ibi) > 0.05).sum() / len(diff_ibi) * 100 if len(diff_ibi) > 0 else 0
         
         return {
+            'hrv_mean_ibi': mean_ibi,
             'hrv_rmssd': rmssd,
             'hrv_sdnn': sdnn,
             'hrv_pnn50': pnn50
@@ -283,13 +464,28 @@ class BiosignalPreprocessor:
         if len(acc_magnitude) == 0:
             return {}
         
-        return {
+        # Individual axis statistics
+        features = {}
+        for axis in ['ACC_X', 'ACC_Y', 'ACC_Z']:
+            axis_data = acc_data[axis].dropna()
+            if len(axis_data) > 0:
+                features.update({
+                    f'{axis.lower()}_mean': axis_data.mean(),
+                    f'{axis.lower()}_std': axis_data.std(),
+                    f'{axis.lower()}_max': axis_data.max(),
+                    f'{axis.lower()}_min': axis_data.min()
+                })
+        
+        # Magnitude features
+        features.update({
             'acc_magnitude_mean': acc_magnitude.mean(),
             'acc_magnitude_std': acc_magnitude.std(),
             'acc_magnitude_max': acc_magnitude.max(),
             'acc_magnitude_min': acc_magnitude.min(),
             'acc_activity_level': self._classify_activity_level(acc_magnitude.mean())
-        }
+        })
+        
+        return features
     
     def _classify_activity_level(self, acc_mean: float) -> int:
         """Classify activity level based on accelerometer magnitude."""
@@ -312,6 +508,15 @@ class BiosignalPreprocessor:
             fs = 64  # BVP sampling rate
             filtered_bvp = self._bandpass_filter(bvp_data.values, fs)
             
+            # Basic statistical features first
+            features = {
+                'bvp_mean': np.mean(filtered_bvp),
+                'bvp_std': np.std(filtered_bvp),
+                'bvp_max': np.max(filtered_bvp),
+                'bvp_min': np.min(filtered_bvp),
+                'bvp_range': np.max(filtered_bvp) - np.min(filtered_bvp)
+            }
+            
             # Find peaks with adaptive parameters
             min_distance = int(0.4 * fs)  # Minimum 40ms between peaks
             peaks, _ = scipy.signal.find_peaks(
@@ -321,16 +526,16 @@ class BiosignalPreprocessor:
             )
             
             if len(peaks) < 2:
-                return {}
+                return features
             
             # Calculate morphological features for each pulse
             pulse_features = self._extract_pulse_features(filtered_bvp, peaks, fs)
             
-            if not pulse_features:
-                return {}
+            if not pulse_features or not pulse_features['amplitudes']:
+                return features
             
-            # Aggregate features
-            return {
+            # Aggregate morphological features
+            features.update({
                 'bvp_systolic_amp_mean': np.mean(pulse_features['amplitudes']),
                 'bvp_systolic_amp_std': np.std(pulse_features['amplitudes']),
                 'bvp_pulse_width_mean': np.mean(pulse_features['widths']),
@@ -338,11 +543,18 @@ class BiosignalPreprocessor:
                 'bvp_rise_time_mean': np.mean(pulse_features['rise_times']),
                 'bvp_rise_time_std': np.std(pulse_features['rise_times']),
                 'bvp_pulse_rate': len(peaks) / (len(bvp_data) / fs) * 60  # beats per minute
-            }
+            })
+            
+            return features
             
         except Exception as e:
             logging.warning(f"BVP feature extraction failed: {e}")
-            return {}
+            return {
+                'bvp_mean': np.mean(bvp_data.values),
+                'bvp_std': np.std(bvp_data.values),
+                'bvp_max': np.max(bvp_data.values),
+                'bvp_min': np.min(bvp_data.values)
+            }
     
     def _extract_pulse_features(self, signal: np.ndarray, peaks: np.ndarray, 
                                fs: int) -> Dict[str, List]:
@@ -424,23 +636,44 @@ class BiosignalPreprocessor:
         return features
 
 def process_participant(participant_dir: str, output_dir: str, 
-                       window_size: int = 10) -> None:
-    """Process a single participant's data."""
+                       window_size: int = 10, max_sessions: Optional[int] = None) -> None:
+    """
+    Process a single participant's data.
+    
+    Args:
+        participant_dir: Path to participant directory
+        output_dir: Output directory for processed features
+        window_size: Window size in seconds for feature extraction
+        max_sessions: Maximum number of sessions to process (None for all)
+    """
     participant_id = os.path.basename(participant_dir)
-    output_file = os.path.join(output_dir, f"participant_{participant_id}_features.csv")
+    
+    # Add session limit to output filename if specified
+    if max_sessions is not None:
+        output_file = os.path.join(output_dir, f"participant_{participant_id}_features_{max_sessions}sessions.csv")
+    else:
+        output_file = os.path.join(output_dir, f"participant_{participant_id}_features.csv")
     
     try:
         preprocessor = BiosignalPreprocessor(window_size=window_size)
         
-        # Load and merge sessions
-        merged_data = preprocessor.load_and_merge_sessions(participant_dir)
+        # Load and merge sessions with session limit
+        merged_data = preprocessor.load_and_merge_sessions(participant_dir, max_sessions=max_sessions)
         
-        # Extract features
+        # Extract features (now session-aware)
         features_df = preprocessor.extract_window_features(merged_data)
+        
+        # Reorder columns to put session and timestamp first
+        column_order = ['session', 'timestamp'] + [col for col in features_df.columns if col not in ['session', 'timestamp']]
+        features_df = features_df[column_order]
         
         # Save results
         features_df.to_csv(output_file, index=False)
-        logging.info(f"Saved features for participant {participant_id}: {len(features_df)} windows")
+        
+        sessions_info = f" (limited to {max_sessions} sessions)" if max_sessions else ""
+        logging.info(f"Saved features for participant {participant_id}{sessions_info}: {len(features_df)} windows")
+        logging.info(f"Sessions processed: {features_df['session'].unique()}")
+        logging.info(f"Windows per session: {features_df['session'].value_counts().to_dict()}")
         
     except Exception as e:
         logging.error(f"Failed to process participant {participant_id}: {e}")
@@ -450,10 +683,12 @@ def main():
     parser.add_argument('--participant', type=str, help='Specific participant ID to process')
     parser.add_argument('--data-dir', type=str, default='../data/raw', 
                        help='Path to raw data directory (default: ../data/raw)')
-    parser.add_argument('--output-dir', type=str, default='processed_features',
+    parser.add_argument('--output-dir', type=str, default='../data/processed',
                        help='Output directory for processed features (default: processed_features)')
     parser.add_argument('--window-size', type=int, default=10,
                        help='Window size in seconds (default: 10)')
+    parser.add_argument('--max-sessions', type=int, default=None,
+                       help='Maximum number of sessions to process per participant (default: all sessions)')
     parser.add_argument('--verbose', '-v', action='store_true',
                        help='Enable verbose logging')
     
@@ -480,6 +715,8 @@ def main():
     
     logging.info(f"Data directory: {raw_data_dir}")
     logging.info(f"Output directory: {output_dir}")
+    if args.max_sessions:
+        logging.info(f"Session limit: {args.max_sessions}")
     
     if args.participant:
         # Process specific participant
@@ -491,13 +728,13 @@ def main():
             return
         
         logging.info(f"Processing single participant: {args.participant}")
-        process_participant(str(participant_path), str(output_dir), args.window_size)
+        process_participant(str(participant_path), str(output_dir), args.window_size, args.max_sessions)
     else:
         # Process all participants
         logging.info("Processing all participants...")
         for participant_dir in raw_data_dir.iterdir():
             if participant_dir.is_dir():
-                process_participant(str(participant_dir), str(output_dir), args.window_size)
+                process_participant(str(participant_dir), str(output_dir), args.window_size, args.max_sessions)
 
 if __name__ == "__main__":
     main()
