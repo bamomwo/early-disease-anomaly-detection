@@ -450,53 +450,69 @@ class BiosignalPreprocessor:
         }
     
     def _calculate_acc_features(self, acc_data: pd.DataFrame) -> Dict:
-        """Calculate accelerometer features."""
-        # Calculate magnitude
-        acc_magnitude = np.sqrt(
-            acc_data['ACC_X'].fillna(0)**2 + 
-            acc_data['ACC_Y'].fillna(0)**2 + 
-            acc_data['ACC_Z'].fillna(0)**2
-        )
+        """
+        Calculate accelerometer features - only magnitude-based features are retained.
+        Ensures magnitude is calculated per sample, then aggregated over the window.
         
-        # Remove zero padding
+        Note: Raw ACC data is in 1/64g units, so we convert to g-force units first.
+        """
+        # Verify we have all required columns
+        required_cols = ['ACC_X', 'ACC_Y', 'ACC_Z']
+        if not all(col in acc_data.columns for col in required_cols):
+            return {}
+        
+        # Convert raw accelerometer data from 1/64g units to g-force units
+        # Raw data format: 1/64g (so divide by 64 to get actual g values)
+        acc_x_g = acc_data['ACC_X'].fillna(0) / 64.0
+        acc_y_g = acc_data['ACC_Y'].fillna(0) / 64.0
+        acc_z_g = acc_data['ACC_Z'].fillna(0) / 64.0
+        
+        # Calculate magnitude per sample in g-force units
+        # For each time point: magnitude = sqrt(x² + y² + z²)
+        acc_magnitude = np.sqrt(acc_x_g**2 + acc_y_g**2 + acc_z_g**2)
+        
+        # Remove zero padding (samples where all axes were NaN/0)
         acc_magnitude = acc_magnitude[acc_magnitude > 0]
         
         if len(acc_magnitude) == 0:
             return {}
         
-        # Individual axis statistics
-        features = {}
-        for axis in ['ACC_X', 'ACC_Y', 'ACC_Z']:
-            axis_data = acc_data[axis].dropna()
-            if len(axis_data) > 0:
-                features.update({
-                    f'{axis.lower()}_mean': axis_data.mean(),
-                    f'{axis.lower()}_std': axis_data.std(),
-                    f'{axis.lower()}_max': axis_data.max(),
-                    f'{axis.lower()}_min': axis_data.min()
-                })
-        
-        # Magnitude features
-        features.update({
+        # Calculate only the important magnitude-based features (now in g-force units)
+        features = {
             'acc_magnitude_mean': acc_magnitude.mean(),
             'acc_magnitude_std': acc_magnitude.std(),
             'acc_magnitude_max': acc_magnitude.max(),
             'acc_magnitude_min': acc_magnitude.min(),
             'acc_activity_level': self._classify_activity_level(acc_magnitude.mean())
-        })
+        }
         
         return features
     
     def _classify_activity_level(self, acc_mean: float) -> int:
-        """Classify activity level based on accelerometer magnitude."""
-        if acc_mean < 0.1:
-            return 0  # Resting
-        elif acc_mean < 0.5:
+        """
+        Classify activity level based on accelerometer magnitude in g-force units.
+        
+        Args:
+            acc_mean: Mean acceleration magnitude in g-force units
+            
+        Returns:
+            Activity level: 0=Resting, 1=Light, 2=Moderate, 3=High
+            
+        Note: Thresholds are based on research literature for wearable accelerometers.
+        - Resting: ~1.0g (gravitational baseline with minimal movement)
+        - Light: 1.0-1.2g (walking slowly, gentle movements)  
+        - Moderate: 1.2-1.8g (normal walking, moderate activities)
+        - High: >1.8g (running, vigorous activities)
+        """
+        if acc_mean < 1.2:
+            return 0  # Resting/Sedentary
+        elif acc_mean < 1.8:
             return 1  # Light activity
-        elif acc_mean < 1.0:
+        elif acc_mean < 2.5:
             return 2  # Moderate activity
         else:
             return 3  # High activity
+
     
     def _calculate_bvp_morphological_features(self, bvp_data: pd.Series) -> Dict:
         """
