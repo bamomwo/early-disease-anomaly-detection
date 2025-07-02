@@ -1,104 +1,161 @@
 import pandas as pd
 import os
-import argparse
-import logging
-from pathlib import Path
+from datetime import datetime, time
+import numpy as np
 
-# Configure logging
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+def create_survey_datetime(date_str, time_str):
+    """Combine survey date and time into a single datetime object"""
+    try:
+        # Parse date
+        if '/' in str(date_str):
+            date_part = datetime.strptime(str(date_str), '%Y/%m/%d').date()
+        else:
+            date_part = datetime.strptime(str(date_str), '%Y-%m-%d').date()
+        
+        # Handle time - could be string or already a time object
+        time_str = str(time_str).strip()
+        if ':' in time_str:
+            time_parts = time_str.split(':')
+            if len(time_parts) >= 2:
+                hour = int(time_parts[0])
+                minute = int(time_parts[1])
+                second = int(time_parts[2]) if len(time_parts) > 2 else 0
+                time_part = time(hour, minute, second)
+            else:
+                return None
+        else:
+            return None
+        
+        # Combine date and time
+        return datetime.combine(date_part, time_part)
+    except Exception as e:
+        print(f"    Error creating datetime from '{date_str}' and '{time_str}': {e}")
+        return None
 
-def load_survey_data(survey_file_path: str) -> pd.DataFrame:
-    """Loads and preprocesses the survey data, focusing on stress level."""
-    logging.info(f"Loading survey data from: {survey_file_path}")
-    survey_df = pd.read_excel(survey_file_path)
+def extract_participant_id(filename):
+    """Extract participant ID from filename in format '6B.csv'"""
+    base_name = os.path.splitext(filename)[0]  # Remove .csv extension
+    return base_name  # Returns '6B' from '6B.csv'
 
-    # Combine date and time columns to create full datetime objects
-    survey_df['start_datetime'] = pd.to_datetime(survey_df['date'].dt.strftime('%Y-%m-%d') + ' ' + survey_df['Start time'].astype(str))
-    survey_df['end_datetime'] = pd.to_datetime(survey_df['date'].dt.strftime('%Y-%m-%d') + ' ' + survey_df['End time'].astype(str))
-
-    # Rename ID column for consistency
-    survey_df.rename(columns={'ID': 'participant_id'}, inplace=True)
+def populate_stress_levels(participant_folder, survey_file_path, output_folder=None):
+    """
+    Populate stress levels for all participant files based on survey data
     
-    # Select only relevant columns for stress labeling
-    survey_df = survey_df[['participant_id', 'start_datetime', 'end_datetime', 'Stress level']]
+    Args:
+        participant_folder: Path to folder containing participant CSV files
+        survey_file_path: Path to the survey CSV file
+        output_folder: Path to save updated files (if None, overwrites original files)
+    """
     
-    logging.info(f"Loaded {len(survey_df)} survey entries for stress labeling.")
-    return survey_df
-
-def label_participant_features(participant_features_path: str, survey_data: pd.DataFrame, output_dir: Path) -> None:
-    """Labels a single participant's feature data with stress level information."""
-    participant_id = participant_features_path.stem.replace('participant_', '').replace('_features', '')
-    logging.info(f"Processing participant: {participant_id}")
-
-    # Load participant features
-    features_df = pd.read_csv(participant_features_path)
-    features_df['timestamp'] = pd.to_datetime(features_df['timestamp'])
-    
-    # Filter survey data for the current participant
-    participant_survey = survey_data[survey_data['participant_id'] == participant_id].copy()
-
-    if participant_survey.empty:
-        logging.warning(f"No survey data found for participant {participant_id}. Skipping labeling.")
-        # Save original features to labeled directory if no survey data, or handle as per project needs
-        # For now, we'll just skip saving if no survey data for labeling
+    # Load survey data
+    try:
+        survey_data = pd.read_csv(survey_file_path)
+        survey_data = survey_data.dropna()
+        print(f"Loaded survey data with {len(survey_data)} records")
+    except Exception as e:
+        print(f"Error loading survey file: {e}")
         return
-
-    # Sort both dataframes by timestamp for merge_asof
-    features_df.sort_values('timestamp', inplace=True)
-    participant_survey.sort_values('start_datetime', inplace=True)
-
-    # Perform merge_asof to assign labels
-    # We merge on 'timestamp' from features_df and 'start_datetime' from participant_survey
-    # direction='backward' means for each feature timestamp, it looks for the latest start_datetime
-    # that is less than or equal to the feature timestamp.
-    labeled_features_df = pd.merge_asof(
-        features_df,
-        participant_survey[['start_datetime', 'end_datetime', 'Stress level']],
-        left_on='timestamp',
-        right_on='start_datetime',
-        direction='backward'
-    )
-
-    # Assign stress level only if the feature timestamp falls within the survey event duration
-    labeled_features_df['stress_level'] = labeled_features_df.apply(
-        lambda row: row['Stress level'] if row['timestamp'] >= row['start_datetime'] and row['timestamp'] <= row['end_datetime'] else None,
-        axis=1
-    )
-
-    # Drop temporary merge columns
-    labeled_features_df.drop(columns=['start_datetime', 'end_datetime', 'Stress level'], inplace=True)
-
-    # Save the labeled data
-    output_file_path = output_dir / f"participant_{participant_id}_labeled_features.csv"
-    labeled_features_df.to_csv(output_file_path, index=False)
-    logging.info(f"Saved labeled features for participant {participant_id} to: {output_file_path}")
-
-def main():
-    parser = argparse.ArgumentParser(description='Label preprocessed biosignal features with survey data.')
-    parser.add_argument('--input-dir', type=str, default='../data/processed',
-                        help='Path to the directory containing preprocessed feature CSVs (default: ../data/processed)')
-    parser.add_argument('--output-dir', type=str, default='../data/labeled',
-                        help='Path to the directory to save labeled feature CSVs (default: ../data/labeled)')
-    parser.add_argument('--survey-file', type=str, default='../data/raw/surveyresult.xlsx',
-                        help='Path to the survey results Excel file (default: ../data/raw/surveyresult.xlsx)')
     
-    args = parser.parse_args()
+    # Clean column names
+    survey_data.columns = survey_data.columns.str.strip()
+    
+    # Get list of participant files
+    participant_files = [f for f in os.listdir(participant_folder) if f.endswith('.csv')]
+    print(f"Found {len(participant_files)} participant files")
+    
+    if output_folder and not os.path.exists(output_folder):
+        os.makedirs(output_folder)
+    
+    for file in participant_files:
+        try:
+            print(f"\nProcessing {file}...")
+            
+            # Extract participant ID from filename
+            participant_id = extract_participant_id(file)
+            
+            # Load participant timeseries data
+            participant_path = os.path.join(participant_folder, file)
+            participant_data = pd.read_csv(participant_path)
+            
+            # Clean column names
+            participant_data.columns = participant_data.columns.str.strip()
+            
+            # Initialize stress level column
+            participant_data['stress_level'] = np.nan
+            
+            # Find survey records for this participant
+            # You may need to adjust the column name used for matching participant ID
+            participant_surveys = survey_data[
+                survey_data['participant_id'] == participant_id  # Adjust column name as needed
+            ].copy() if 'participant_id' in survey_data.columns else survey_data.copy()
+            
+            if len(participant_surveys) == 0:
+                print(f"  No survey data found for participant {participant_id}")
+                continue
+            
+            print(f"  Found {len(participant_surveys)} survey sessions for participant {participant_id}")
+            
+            # Process each timestamp in participant data
+            for idx, row in participant_data.iterrows():
+                timestamp_str = str(row['timestamp'])  # Adjust column name as needed
+                try:
+                    timestamp_dt = pd.to_datetime(timestamp_str)
+                except:
+                    continue
+                
+                # Check against each survey session
+                for _, survey_row in participant_surveys.iterrows():
+                    try:
+                        # Create survey start and end datetime objects
+                        survey_start_dt = create_survey_datetime(
+                            survey_row['date'], 
+                            survey_row['Start time']  # Adjust column name
+                        )
+                        survey_end_dt = create_survey_datetime(
+                            survey_row['date'], 
+                            survey_row['End time']    # Adjust column name
+                        )
+                        
+                        if survey_start_dt is None or survey_end_dt is None:
+                            continue
+                        
+                        # Simple datetime comparison
+                        if survey_start_dt <= timestamp_dt <= survey_end_dt:
+                            stress_level = survey_row['Stress level']  # Adjust column name
+                            participant_data.at[idx, 'stress_level'] = stress_level
+                            break  # Found matching session, move to next timestamp
+                            
+                    except Exception as e:
+                        print(f"    Error processing survey row: {e}")
+                        continue
+            
+            # Save updated participant data
+            if output_folder:
+                output_path = os.path.join(output_folder, file)
+            else:
+                output_path = participant_path  # Overwrite original
+            
+            participant_data.to_csv(output_path, index=False)
+            
+            # Print summary
+            stress_assigned = participant_data['stress_level'].notna().sum()
+            total_rows = len(participant_data)
+            print(f"  Assigned stress levels to {stress_assigned}/{total_rows} timestamps")
+            
+        except Exception as e:
+            print(f"Error processing {file}: {e}")
+            continue
+    
+    print("\nProcessing completed!")
 
-    # Resolve paths relative to the script location
-    script_dir = Path(__file__).parent
-    input_dir = (script_dir / args.input_dir).resolve()
-    output_dir = (script_dir / args.output_dir).resolve()
-    survey_file = (script_dir / args.survey_file).resolve()
-
-    # Create output directory if it doesn't exist
-    output_dir.mkdir(parents=True, exist_ok=True)
-
-    # Load survey data once
-    survey_data = load_survey_data(survey_file)
-
-    # Process each participant's feature file
-    for feature_file in input_dir.glob('participant_*.csv'):
-        label_participant_features(feature_file, survey_data, output_dir)
-
+# Example usage
 if __name__ == "__main__":
-    main()
+    # Update these paths according to your setup
+    participant_folder = "../data/processed"
+    survey_file = "../data/raw/surveyresult.csv"
+    output_folder = "../data/labeled"  # Optional, set to None to overwrite original files
+    
+    populate_stress_levels(participant_folder, survey_file, output_folder)
+    
+    # If you want to process just one file for testing:
+    # populate_stress_levels("participant_files", "survey_data.csv", "output_files")

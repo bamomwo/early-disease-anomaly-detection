@@ -351,6 +351,24 @@ class BiosignalPreprocessor:
                 if (time_diffs > max_expected_gap).sum() > 5:  # Allow few gaps
                     return False
         
+        # Check EDA data quality
+        if 'EDA' in window_data.columns:
+            eda_data = window_data['EDA'].dropna()
+            expected_eda_samples = self.window_size * self.sampling_rates['EDA']
+            
+            if len(eda_data) < expected_eda_samples * self.min_data_threshold:
+                return False
+        
+        # Check ACC data quality
+        acc_cols = ['ACC_X', 'ACC_Y', 'ACC_Z']
+        if all(col in window_data.columns for col in acc_cols):
+            # We can check any of the axes, e.g., ACC_X, as they share timestamps
+            acc_data = window_data['ACC_X'].dropna()
+            expected_acc_samples = self.window_size * self.sampling_rates['ACC_X']
+            
+            if len(acc_data) < expected_acc_samples * self.min_data_threshold:
+                return False
+        
         return True
     
     def _extract_window_features_single(self, window_data: pd.DataFrame, 
@@ -399,14 +417,9 @@ class BiosignalPreprocessor:
             # EDA Features
             if 'EDA' in window_data.columns:
                 eda_data = window_data['EDA'].dropna()
-                if len(eda_data) > 0:
-                    features.update({
-                        'eda_mean': eda_data.mean(),
-                        'eda_std': eda_data.std(),
-                        'eda_max': eda_data.max(),
-                        'eda_min': eda_data.min(),
-                        'eda_range': eda_data.max() - eda_data.min()
-                    })
+                if len(eda_data) > 1:  # Need at least 2 points for advanced features
+                    eda_features = self._calculate_eda_features(eda_data)
+                    features.update(eda_features)
             
             # BVP Morphological Features (optimized)
             if 'BVP' in window_data.columns:
@@ -512,6 +525,81 @@ class BiosignalPreprocessor:
             return 2  # Moderate activity
         else:
             return 3  # High activity
+
+    
+    def _calculate_eda_features(self, eda_data: pd.Series) -> Dict:
+        """
+        Calculate advanced EDA features including tonic and phasic components.
+        """
+        features = {
+            'eda_mean': eda_data.mean(),
+            'eda_std': eda_data.std(),
+            'eda_max': eda_data.max(),
+            'eda_min': eda_data.min(),
+            'eda_range': eda_data.max() - eda_data.min()
+        }
+        
+        fs = self.sampling_rates['EDA']
+        signal = eda_data.values
+        
+        try:
+            # Tonic component (SCL) - low-pass filter to get the slow-moving trend
+            nyq = 0.5 * fs
+            low = 0.1 / nyq  # Cutoff frequency for SCL
+            b, a = butter(2, low, btype='low')
+            scl = filtfilt(b, a, signal)
+            
+            # EDA slope
+            time_seconds = len(signal) / fs
+            if time_seconds > 0:
+                features['eda_slope'] = (scl[-1] - scl[0]) / time_seconds
+
+            # Phasic component (SCR) - band-pass filter to isolate rapid changes
+            low_scr = 0.05 / nyq
+            # The high cutoff must be strictly less than the Nyquist frequency (nyq).
+            # The original value of 2.0 was equal to nyq for EDA (fs=4Hz), causing an error.
+            # We set it to a value slightly below nyq.
+            high_scr_freq = 1.99
+            high_scr = high_scr_freq / nyq
+            b_scr, a_scr = butter(4, [low_scr, high_scr], btype='band')
+            scr = filtfilt(b_scr, a_scr, signal)
+
+            # Find peaks (SCRs)
+            peaks, properties = scipy.signal.find_peaks(
+                scr, 
+                height=0.01,  # Min height in micro-siemens
+                distance=fs,  # Min 1-second distance between peaks
+                width=True
+            )
+            
+            if len(peaks) > 0:
+                features['num_scr_peaks'] = len(peaks)
+                features['mean_scr_amplitude'] = np.mean(properties['peak_heights'])
+                
+                # Width is in samples, convert to seconds
+                peak_widths_sec = properties['widths'] / fs
+                features['mean_scr_peak_width'] = np.mean(peak_widths_sec)
+                
+                # Area under curve (amplitude * width)
+                areas = properties['peak_heights'] * peak_widths_sec
+                features['mean_scr_area'] = np.mean(areas)
+            else:
+                # If no peaks, set features to 0
+                features['num_scr_peaks'] = 0
+                features['mean_scr_amplitude'] = 0
+                features['mean_scr_peak_width'] = 0
+                features['mean_scr_area'] = 0
+
+        except Exception as e:
+            logging.warning(f"Could not extract advanced EDA features for window: {e}")
+            # Fallback to NaN for advanced features if calculation fails
+            features['eda_slope'] = np.nan
+            features['num_scr_peaks'] = 0
+            features['mean_scr_amplitude'] = 0
+            features['mean_scr_peak_width'] = 0
+            features['mean_scr_area'] = 0
+            
+        return features
 
     
     def _calculate_bvp_morphological_features(self, bvp_data: pd.Series) -> Dict:
@@ -666,9 +754,9 @@ def process_participant(participant_dir: str, output_dir: str,
     
     # Add session limit to output filename if specified
     if max_sessions is not None:
-        output_file = os.path.join(output_dir, f"participant_{participant_id}_features_{max_sessions}sessions.csv")
+        output_file = os.path.join(output_dir, f"{participant_id}_{max_sessions}sessions.csv")
     else:
-        output_file = os.path.join(output_dir, f"participant_{participant_id}_features.csv")
+        output_file = os.path.join(output_dir, f"{participant_id}.csv")
     
     try:
         preprocessor = BiosignalPreprocessor(window_size=window_size)
