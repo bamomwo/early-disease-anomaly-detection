@@ -24,30 +24,35 @@ def normalize_participant(file_path, participant_id):
 
     global FEATURE_COLUMNS
     if FEATURE_COLUMNS is None:
-        # Detect numeric columns to normalize (exclude IDs, timestamps)
         FEATURE_COLUMNS = df.select_dtypes(include=[np.number]).columns.tolist()
 
-    # Split into train and test for stats calculation
+    # Split into train and test (time-based)
     train_df, test_df = train_test_split(df, test_size=TEST_SIZE, shuffle=False, random_state=RANDOM_SEED)
 
-    scaler = StandardScaler()
-    scaler.fit(train_df[FEATURE_COLUMNS].dropna())  # only use non-NaN rows
+    # Compute mean and std from train data (ignore NaNs)
+    train_values = train_df[FEATURE_COLUMNS]
+    means = train_values.mean(skipna=True)
+    stds = train_values.std(skipna=True)
 
-    # Save stats
-    stats = {
-        'mean': scaler.mean_.tolist(),
-        'std': scaler.scale_.tolist(),
-        'features': FEATURE_COLUMNS
-    }
+    # Normalize both train and test using train stats — PRESERVE NaNs!
+    def z_score(df_chunk):
+        return (df_chunk[FEATURE_COLUMNS] - means) / stds
 
-    # Normalize both sets using train stats
     train_norm = train_df.copy()
     test_norm = test_df.copy()
 
-    train_norm[FEATURE_COLUMNS] = scaler.transform(train_df[FEATURE_COLUMNS].fillna(0))
-    test_norm[FEATURE_COLUMNS] = scaler.transform(test_df[FEATURE_COLUMNS].fillna(0))
+    train_norm[FEATURE_COLUMNS] = z_score(train_df)
+    test_norm[FEATURE_COLUMNS] = z_score(test_df)
+
+    # Save stats
+    stats = {
+        'mean': means.tolist(),
+        'std': stds.tolist(),
+        'features': FEATURE_COLUMNS
+    }
 
     return train_norm, test_norm, stats
+
 
 # ---------- MAIN ----------
 
