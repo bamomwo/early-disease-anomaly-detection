@@ -80,6 +80,9 @@ class PhysiologicalDataset(Dataset):
             filled_path = self.data_path / 'filled' / self.data_type / f'{participant}_{self.data_type}_filled.csv'
             mask_path = self.data_path / 'masks' / self.data_type / f'{participant}_{self.data_type}_mask.npy'
             
+            print("Loading filled data from:", filled_path)
+            print("Loading mask from:", mask_path)
+
             # Check if files exist
             if not filled_path.exists():
                 logger.error(f"Filled data file not found: {filled_path}")
@@ -90,11 +93,19 @@ class PhysiologicalDataset(Dataset):
                 return
             
             # Load filled data (NaNs replaced with zeros)
-            filled_data = pd.read_csv(filled_path)
-            
+            filled_data_ = pd.read_csv(filled_path)
+            filled_data = filled_data_.drop(columns=['session','timestamp'])
+
+            print("Filled data shape:", filled_data.shape)
+            print("Filled data missing ratio:", filled_data.isna().sum().sum() / filled_data.size)
+
             # Load mask data
             mask_data = np.load(mask_path)
             
+            print("Mask shape:", mask_data.shape)
+            print("Mask unique values:", np.unique(mask_data, return_counts=True))
+            print("Mask missing ratio:", 1 - mask_data.sum() / mask_data.size)
+
             # Ensure mask and data have same shape
             if filled_data.shape != mask_data.shape:
                 logger.warning(f"Shape mismatch for participant {participant}: "
@@ -218,8 +229,8 @@ class PhysiologicalDataLoader:
             'overlap': 0.5,
             'batch_size': 32,
             'shuffle': True,
-            'num_workers': 4,
-            'pin_memory': True,
+            'num_workers': 1,
+            'pin_memory': False,
             'drop_last': False
         }
         
@@ -363,51 +374,79 @@ def get_data_statistics(dataloader: DataLoader) -> Dict[str, float]:
     Returns:
         Dictionary with dataset statistics
     """
-    total_samples = 0
-    total_features = 0
+    total_values = 0
     total_valid_values = 0
-    
     for batch in dataloader:
-        data = batch['data']
+        data = batch['data']  # shape: (batch_size, sequence_length, n_features)
         mask = batch['mask']
-        
-        total_samples += data.size(0)
-        total_features += data.size(-1)
+        batch_size = data.size(0)
+        sequence_length = data.size(1)
+        n_features = data.size(2)
+        total_values += batch_size * sequence_length * n_features
         total_valid_values += mask.sum().item()
     
     return {
-        'total_samples': total_samples,
-        'total_features': total_features,
+        'total_values': total_values,
         'total_valid_values': total_valid_values,
-        'missing_data_ratio': 1 - (total_valid_values / (total_samples * total_features))
+        'missing_data_ratio': 1 - (total_valid_values / total_values)
     }
 
-# Example usage and testing
-if __name__ == "__main__":
-    # Example usage with your project structure
-    data_path = "../../data"
-    participants = ["6B", "7A", "8C"]  # Using your naming convention
+# def get_data_statistics(dataloader: DataLoader) -> Dict[str, float]:
+#     """
+#     Calculate statistics for the dataset.
     
-    # Create data loader factory
-    loader_factory = PhysiologicalDataLoader(data_path)
-    
-    # Create personalized loaders for single participant
-    train_loader, test_loader = loader_factory.create_personalized_loaders("5C")
-    
-    # Create general loaders for multiple participants
-    general_train, general_test = loader_factory.create_general_loaders(participants)
-    
-    # Test the data loading
-    print("Testing data loading...")
-    for batch_idx, batch in enumerate(train_loader):
-        print(f"Batch {batch_idx}:")
-        print(f"  Data shape: {batch['data'].shape}")
-        print(f"  Mask shape: {batch['mask'].shape}")
-        print(f"  Participant IDs: {batch['participant_id'][:5]}...")  # First 5
+#     Args:
+#         dataloader: PyTorch DataLoader
         
-        if batch_idx >= 2:  # Only show first 3 batches
-            break
+#     Returns:
+#         Dictionary with dataset statistics
+#     """
+#     total_samples = 0
+#     total_features = 0
+#     total_valid_values = 0
     
-    # Get dataset statistics
-    stats = get_data_statistics(train_loader)
-    print(f"\nDataset statistics: {stats}")
+#     for batch in dataloader:
+#         data = batch['data']
+#         mask = batch['mask']
+        
+#         total_samples += data.size(0)
+#         total_features += data.size(-1)
+#         total_valid_values += mask.sum().item()
+    
+#     return {
+#         'total_samples': total_samples,
+#         'total_features': total_features,
+#         'total_valid_values': total_valid_values,
+#         'missing_data_ratio': 1 - (total_valid_values / (total_samples * total_features))
+#     }
+
+
+# Example usage and testing
+# if __name__ == "__main__":
+#     # Example usage with your project structure
+#     data_path = "../../data"
+#     participants = ["6B"]  # Using your naming convention
+    
+#     # Create data loader factory
+#     loader_factory = PhysiologicalDataLoader(data_path)
+    
+#     # Create personalized loaders for single participant
+#     train_loader, test_loader = loader_factory.create_personalized_loaders("5C")
+    
+#     # Create general loaders for multiple participants
+#     #general_train, general_test = loader_factory.create_general_loaders(participants)
+    
+#     # Test the data loading
+#     print("Testing data loading...")
+#     for batch_idx, batch in enumerate(train_loader):
+#         print(f"Batch {batch_idx}:")
+#         print(f"  Data shape: {batch['data'].shape}")
+#         print(f"  Mask shape: {batch['mask'].shape}")
+#         print(f"  Participant IDs: {batch['participant_id'][:5]}...")  # First 5
+        
+#         if batch_idx >= 2:  # Only show first 3 batches
+#             break
+    
+#     # Get dataset statistics
+#     stats = get_data_statistics(train_loader)
+#     print(f"\nDataset statistics: {stats}")
