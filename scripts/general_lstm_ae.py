@@ -27,8 +27,9 @@ def main():
 
     # Data loader
     loader_factory = PhysiologicalDataLoader(data_path)
-    train_loader, test_loader = loader_factory.create_personalized_loaders("5C")
-
+    participants = ["5C", "6B"]
+    # train_loader, test_loader = loader_factory.create_personalized_loaders("5C")
+    train_loader, test_loader = loader_factory.create_general_loaders(participants)
     # Loss function
     loss_fn = MaskedMSELoss()
 

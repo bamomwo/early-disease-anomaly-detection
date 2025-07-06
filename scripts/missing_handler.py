@@ -40,7 +40,7 @@ def process_participant(participant_id: str):
         input_filled, mask = create_mask_and_fill(df, feature_cols)
 
         # Save filled data
-        filled_output_path = os.path.join(MASKED_INPUT_DIR, split, f"{participant_id}_{split}_masked.csv")
+        filled_output_path = os.path.join(MASKED_INPUT_DIR, split, f"{participant_id}_{split}_filled.csv")
         input_filled.to_csv(filled_output_path, index=False)
 
         # Save mask as .npy

@@ -18,7 +18,7 @@ class PhysiologicalDataset(Dataset):
     Custom Dataset class for physiological data with temporal sequences.
     
     This dataset handles:
-    - Loading normalized data, masks, and filled data
+    - Loading normalized filled data, and masks
     - Creating temporal sequences from windowed features
     - Handling missing data through masking
     - Supporting both single and multiple participant training
@@ -96,15 +96,17 @@ class PhysiologicalDataset(Dataset):
             filled_data_ = pd.read_csv(filled_path)
             filled_data = filled_data_.drop(columns=['session','timestamp'])
 
+            print("|=============== FILLED DATA STATS ===============|")
             print("Filled data shape:", filled_data.shape)
-            print("Filled data missing ratio:", filled_data.isna().sum().sum() / filled_data.size)
+            print("|=============== END OF FILLED DATA STATS ===============| \n")
 
             # Load mask data
             mask_data = np.load(mask_path)
             
+            print("|=============== MASK DATA STATS ===============|")
             print("Mask shape:", mask_data.shape)
-            print("Mask unique values:", np.unique(mask_data, return_counts=True))
             print("Mask missing ratio:", 1 - mask_data.sum() / mask_data.size)
+            print("|=============== END OF MASK DATA STATS ===============| \n")
 
             # Ensure mask and data have same shape
             if filled_data.shape != mask_data.shape:
@@ -228,8 +230,8 @@ class PhysiologicalDataLoader:
             'sequence_length': 10,
             'overlap': 0.5,
             'batch_size': 32,
-            'shuffle': True,
-            'num_workers': 1,
+            'shuffle': False,
+            'num_workers': 4,
             'pin_memory': False,
             'drop_last': False
         }
@@ -391,62 +393,3 @@ def get_data_statistics(dataloader: DataLoader) -> Dict[str, float]:
         'missing_data_ratio': 1 - (total_valid_values / total_values)
     }
 
-# def get_data_statistics(dataloader: DataLoader) -> Dict[str, float]:
-#     """
-#     Calculate statistics for the dataset.
-    
-#     Args:
-#         dataloader: PyTorch DataLoader
-        
-#     Returns:
-#         Dictionary with dataset statistics
-#     """
-#     total_samples = 0
-#     total_features = 0
-#     total_valid_values = 0
-    
-#     for batch in dataloader:
-#         data = batch['data']
-#         mask = batch['mask']
-        
-#         total_samples += data.size(0)
-#         total_features += data.size(-1)
-#         total_valid_values += mask.sum().item()
-    
-#     return {
-#         'total_samples': total_samples,
-#         'total_features': total_features,
-#         'total_valid_values': total_valid_values,
-#         'missing_data_ratio': 1 - (total_valid_values / (total_samples * total_features))
-#     }
-
-
-# Example usage and testing
-# if __name__ == "__main__":
-#     # Example usage with your project structure
-#     data_path = "../../data"
-#     participants = ["6B"]  # Using your naming convention
-    
-#     # Create data loader factory
-#     loader_factory = PhysiologicalDataLoader(data_path)
-    
-#     # Create personalized loaders for single participant
-#     train_loader, test_loader = loader_factory.create_personalized_loaders("5C")
-    
-#     # Create general loaders for multiple participants
-#     #general_train, general_test = loader_factory.create_general_loaders(participants)
-    
-#     # Test the data loading
-#     print("Testing data loading...")
-#     for batch_idx, batch in enumerate(train_loader):
-#         print(f"Batch {batch_idx}:")
-#         print(f"  Data shape: {batch['data'].shape}")
-#         print(f"  Mask shape: {batch['mask'].shape}")
-#         print(f"  Participant IDs: {batch['participant_id'][:5]}...")  # First 5
-        
-#         if batch_idx >= 2:  # Only show first 3 batches
-#             break
-    
-#     # Get dataset statistics
-#     stats = get_data_statistics(train_loader)
-#     print(f"\nDataset statistics: {stats}")
