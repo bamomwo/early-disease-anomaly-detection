@@ -8,8 +8,8 @@ NORMALIZED_DIR = "data/normalized"
 MASKED_INPUT_DIR = "data/filled"
 MASK_DIR = "data/masks"
 
-# Ensure train/test subfolders exist in output directories
-for split in ["train", "test"]:
+# Ensure train/val/test subfolders exist in output directories
+for split in ["train", "val", "test"]:
     os.makedirs(os.path.join(MASKED_INPUT_DIR, split), exist_ok=True)
     os.makedirs(os.path.join(MASK_DIR, split), exist_ok=True)
 
@@ -27,7 +27,7 @@ def create_mask_and_fill(dataframe: pd.DataFrame, feature_cols: list):
 def process_participant(participant_id: str):
     print(f"Processing missing values for {participant_id}...")
 
-    for split in ["train", "test"]:
+    for split in ["train", "val", "test"]:
         input_path = os.path.join(NORMALIZED_DIR, split, f"{participant_id}_{split}.csv")
         if not os.path.exists(input_path):
             print(f"  ✖ File not found: {input_path}")
@@ -47,7 +47,7 @@ def process_participant(participant_id: str):
         mask_output_path = os.path.join(MASK_DIR, split, f"{participant_id}_{split}_mask.npy")
         np.save(mask_output_path, mask.values)
 
-        # print(f"  ✓ Saved: {filled_output_path}")
+        print(f"  ✓ Saved: {filled_output_path}")
         print(f"  ✓ Saved mask: {mask_output_path}")
 
     print(f"✅ Done processing {participant_id}\n")

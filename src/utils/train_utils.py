@@ -36,3 +36,25 @@ def validate(model, val_loader, device, loss_fn):
         total_loss += loss.item()
 
     return total_loss / len(val_loader)
+
+
+@torch.no_grad()
+def evaluate(model, test_loader, device, loss_fn):
+    model.eval()
+    all_losses = []
+    all_inputs = []
+    all_outputs = []
+    for batch in test_loader:
+        x_filled = batch['data'].to(device)
+        mask = batch['mask'].to(device)
+
+        y_pred = model(x_filled)
+        loss = loss_fn(y_pred, x_filled, mask)
+
+        all_losses.append(loss.item())
+        all_inputs.append(x_filled.cpu().numpy())
+        all_outputs.append(y_pred.cpu().numpy())
+
+    avg_loss = sum(all_losses) / len(all_losses) if all_losses else 0.0
+    return avg_loss, all_inputs, all_outputs
+    

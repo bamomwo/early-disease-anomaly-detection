@@ -250,7 +250,7 @@ class PhysiologicalDataLoader:
         
         Args:
             participants: List of participant IDs
-            data_type: 'train' or 'test'
+            data_type: 'train', 'val', or 'test'
             **kwargs: Additional arguments to override default config
             
         Returns:
@@ -279,72 +279,82 @@ class PhysiologicalDataLoader:
         )
         
         return dataloader
-    
+
     def create_personalized_loaders(
         self,
         participant: str,
         **kwargs
-    ) -> Tuple[DataLoader, DataLoader]:
+    ) -> Tuple[DataLoader, DataLoader, DataLoader]:
         """
-        Create train and test loaders for a single participant.
+        Create train, val, and test loaders for a single participant.
         
         Args:
             participant: Participant ID
             **kwargs: Additional configuration
             
         Returns:
-            Tuple of (train_loader, test_loader)
+            Tuple of (train_loader, val_loader, test_loader)
         """
         train_loader = self.create_dataloader(
             participants=[participant],
             data_type='train',
             **kwargs
         )
-        
+        val_loader = self.create_dataloader(
+            participants=[participant],
+            data_type='val',
+            shuffle=False,  # Never shuffle val data
+            **kwargs
+        )
         test_loader = self.create_dataloader(
             participants=[participant],
             data_type='test',
             shuffle=False,  # Never shuffle test data
             **kwargs
         )
-        
-        return train_loader, test_loader
-    
+        return train_loader, val_loader, test_loader
+
     def create_general_loaders(
         self,
         participants: List[str],
         **kwargs
-    ) -> Tuple[DataLoader, DataLoader]:
+    ) -> Tuple[DataLoader, DataLoader, DataLoader]:
         """
-        Create train and test loaders for multiple participants.
+        Create train, val, and test loaders for multiple participants.
         
         Args:
             participants: List of participant IDs
             **kwargs: Additional configuration
             
         Returns:
-            Tuple of (train_loader, test_loader)
+            Tuple of (train_loader, val_loader, test_loader)
         """
         train_loader = self.create_dataloader(
             participants=participants,
             data_type='train',
             **kwargs
         )
-        
+        val_loader = self.create_dataloader(
+            participants=participants,
+            data_type='val',
+            shuffle=False,  # Never shuffle val data
+            **kwargs
+        )
         test_loader = self.create_dataloader(
             participants=participants,
             data_type='test',
             shuffle=False,  # Never shuffle test data
             **kwargs
         )
-        
         # Log summary of loaded sequences
         train_sequences = len(train_loader.dataset)
+        val_sequences = len(val_loader.dataset)
         test_sequences = len(test_loader.dataset)
         logger.info(f"Train loader: {train_sequences} sequences loaded for {len(participants)} participants.")
+        logger.info(f"Val loader: {val_sequences} sequences loaded for {len(participants)} participants.")
         logger.info(f"Test loader: {test_sequences} sequences loaded for {len(participants)} participants.")
-        
-        return train_loader, test_loader
+        return train_loader, val_loader, test_loader
+    
 
 # Utility functions for data loading
 def collate_fn(batch: List[Dict]) -> Dict[str, torch.Tensor]:
