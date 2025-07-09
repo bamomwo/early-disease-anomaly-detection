@@ -4,9 +4,9 @@ import numpy as np
 import pandas as pd
 
 # ---------- CONFIG ----------
-NORMALIZED_DIR = "../data/normalized"
-MASKED_INPUT_DIR = "../data/filled"
-MASK_DIR = "../data/masks"
+NORMALIZED_DIR = "data/normalized"
+MASKED_INPUT_DIR = "data/filled"
+MASK_DIR = "data/masks"
 
 # Ensure train/test subfolders exist in output directories
 for split in ["train", "test"]:

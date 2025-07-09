@@ -96,17 +96,17 @@ class PhysiologicalDataset(Dataset):
             filled_data_ = pd.read_csv(filled_path)
             filled_data = filled_data_.drop(columns=['session','timestamp'])
 
-            print("|=============== FILLED DATA STATS ===============|")
-            print("Filled data shape:", filled_data.shape)
-            print("|=============== END OF FILLED DATA STATS ===============| \n")
+            # print("|=============== FILLED DATA STATS ===============|")
+            # print("Filled data shape:", filled_data.shape)
+            # print("|=============== END OF FILLED DATA STATS ===============| \n")
 
             # Load mask data
             mask_data = np.load(mask_path)
             
-            print("|=============== MASK DATA STATS ===============|")
-            print("Mask shape:", mask_data.shape)
-            print("Mask missing ratio:", 1 - mask_data.sum() / mask_data.size)
-            print("|=============== END OF MASK DATA STATS ===============| \n")
+            # print("|=============== MASK DATA STATS ===============|")
+            # print("Mask shape:", mask_data.shape)
+            # print("Mask missing ratio:", 1 - mask_data.sum() / mask_data.size)
+            # print("|=============== END OF MASK DATA STATS ===============| \n")
 
             # Ensure mask and data have same shape
             if filled_data.shape != mask_data.shape:
@@ -228,7 +228,7 @@ class PhysiologicalDataLoader:
         # Default configuration
         self.default_config = {
             'sequence_length': 10,
-            'overlap': 0.5,
+            'overlap': 0.2,
             'batch_size': 32,
             'shuffle': False,
             'num_workers': 4,
@@ -337,6 +337,12 @@ class PhysiologicalDataLoader:
             shuffle=False,  # Never shuffle test data
             **kwargs
         )
+        
+        # Log summary of loaded sequences
+        train_sequences = len(train_loader.dataset)
+        test_sequences = len(test_loader.dataset)
+        logger.info(f"Train loader: {train_sequences} sequences loaded for {len(participants)} participants.")
+        logger.info(f"Test loader: {test_sequences} sequences loaded for {len(participants)} participants.")
         
         return train_loader, test_loader
 

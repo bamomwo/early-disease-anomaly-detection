@@ -1,5 +1,6 @@
 import sys
 import os
+import json
 import torch
 import torch.nn as nn
 import matplotlib.pyplot as plt
@@ -21,13 +22,15 @@ def main():
         num_layers=1
     )
 
+    # Participants
+    participants = ["5C", "6B", "94"]
+
     # Optimizer and device
     optimizer = torch.optim.Adam(model.parameters(), lr=0.001)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")   
 
     # Data loader
     loader_factory = PhysiologicalDataLoader(data_path)
-    participants = ["5C", "6B"]
     # train_loader, test_loader = loader_factory.create_personalized_loaders("5C")
     train_loader, test_loader = loader_factory.create_general_loaders(participants)
     # Loss function
@@ -38,14 +41,32 @@ def main():
     train_losses = []
     val_losses = []
 
-    num_epochs = 100
+    num_epochs = 200
     best_val_loss = float('inf')
-    checkpoint_dir = "results/lstm_ae/checkpoints"
+    checkpoint_dir = "results/lstm_ae/general/checkpoints"
     os.makedirs(checkpoint_dir, exist_ok=True)
 
     # Parameters for early stopping
     patience = 10
     patience_counter = 0
+
+    # Move model to device
+    model.to(device)
+
+    # Resume training from checkpoint
+    resume_path = os.path.join(checkpoint_dir, "best_model.pth")
+    if os.path.exists(resume_path):
+        print(f"Resuming from {resume_path}")
+        checkpoint = torch.load(resume_path)
+        model.load_state_dict(checkpoint['model_state_dict'])
+        optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+        best_val_loss = checkpoint['best_val_loss']
+        patience_counter = checkpoint['patience_counter']
+        start_epoch = checkpoint['epoch'] + 1
+    else:
+        print("No checkpoint found, starting from scratch")
+
+
 
     # Training loop
     for epoch in range(num_epochs):
@@ -61,7 +82,14 @@ def main():
             best_val_loss = val_loss
             patience_counter = 0
             best_path = os.path.join(checkpoint_dir, "best_model.pth")
-            torch.save(model.state_dict(), best_path)
+            torch.save({
+                'epoch': epoch,
+                'model_state_dict': model.state_dict(),
+                'optimizer_state_dict': optimizer.state_dict(),
+                'best_val_loss': best_val_loss,
+                'patience_counter': patience_counter
+            }, best_path)
+
         else:
             patience_counter += 1
             if patience_counter >= patience:
@@ -70,21 +98,30 @@ def main():
 
         print(f"Epoch {epoch+1}/{num_epochs} | Train Loss: {train_loss:.4f} | Val Loss: {val_loss:.4f}")
     
+    # Saving the losses
+    loss_log = {
+        "train_losses": train_losses,
+        "val_losses": val_losses
+    }
+    with open(os.path.join(checkpoint_dir, f"losses.json"), "w") as f:
+        json.dump(loss_log, f)
+
+    # Saving final model
+    final_path = os.path.join(checkpoint_dir, "final_model.pth")
+    torch.save(model.state_dict(), final_path) 
+
+
 
     # Plotting the losses
     plt.figure(figsize=(10, 5))
     plt.plot(train_losses, label='Train Loss')
     plt.plot(val_losses, label='Val Loss')
     plt.legend()
-    plt.savefig('results/lstm_ae/losses.png')
+    plt.savefig('results/lstm_ae/general/checkpoints/losses.png')
     plt.close()
 
-    final_path = os.path.join(checkpoint_dir, "final_model.pth")
-    torch.save(model.state_dict(), final_path)  
+ 
   
-
-
-
 if __name__ == "__main__":
     main()
 

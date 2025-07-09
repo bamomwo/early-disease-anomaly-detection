@@ -1,0 +1,29 @@
+Training examples (53K)
+Number of sequences (10613)
+
+Model Hyperparameters
+input_size(features):43
+hiddent_size: 64
+number_layers:1
+
+
+Training Hyperparameters
+learning rate: 0.001
+weight_decay:0.0001
+optimizer: Adam
+epoch:200 (doesn’t matter if it’s high because of early stopping)
+Early stopping patience:10
+
+Dataset Hyperparameters
+sequence_length:10
+overlap:0.5
+
+
+DataLoader Hyperparameters
+Sequence_length:10 (same as dataset)
+overlap:0.5 (same as dataset)
+batch_size: 32
+shuffle: True (why true?) (When set to True, often, training loss is higher than validation loss, which is explainable)
+num_workers: 4 ****
+
+Observations

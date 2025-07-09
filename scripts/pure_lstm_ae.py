@@ -1,5 +1,6 @@
 import sys
 import os
+import json
 import torch
 import torch.nn as nn
 import matplotlib.pyplot as plt
@@ -8,6 +9,7 @@ def main():
     # Add project root to path
     sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
     data_path = "data" 
+    participant = "BG"
 
     from src.models.lstm_ae import MaskedLSTMAutoencoder
     from src.utils.losses import MaskedMSELoss
@@ -28,7 +30,7 @@ def main():
 
     # Data loader
     loader_factory = PhysiologicalDataLoader(data_path)
-    train_loader, test_loader = loader_factory.create_personalized_loaders("94")
+    train_loader, test_loader = loader_factory.create_personalized_loaders(participant)
 
     # Loss function
     loss_fn = MaskedMSELoss()
@@ -40,7 +42,7 @@ def main():
 
     num_epochs = 200
     best_val_loss = float('inf')
-    checkpoint_dir = "results/lstm_ae/pure/checkpoints/94"
+    checkpoint_dir = f"results/lstm_ae/pure/checkpoints/{participant}_"
     os.makedirs(checkpoint_dir, exist_ok=True)
 
     # Parameters for early stopping
@@ -50,6 +52,7 @@ def main():
     # Move model to device
     model.to(device)
 
+    # Resume training from checkpoint
     resume_path = os.path.join(checkpoint_dir, "best_model.pth")
     if os.path.exists(resume_path):
         print(f"Resuming from {resume_path}")
@@ -91,6 +94,16 @@ def main():
 
         print(f"Epoch {epoch+1}/{num_epochs} | Train Loss: {train_loss:.4f} | Val Loss: {val_loss:.4f}")
     
+    # Saving the losses
+    loss_log = {
+        "train_losses": train_losses,
+        "val_losses": val_losses
+    }
+    with open(os.path.join(checkpoint_dir, f"losses_{participant}.json"), "w") as f:
+        json.dump(loss_log, f)
+
+    final_path = os.path.join(checkpoint_dir, f"final_model_{participant}.pth")
+    torch.save(model.state_dict(), final_path) 
 
     # Plotting the losses
     plt.figure(figsize=(10, 5))
@@ -98,13 +111,12 @@ def main():
     plt.plot(val_losses, label='Val Loss')
     plt.xlabel('Epoch')
     plt.ylabel('Loss')
-    plt.title('Training and Validation Loss for Participant 94')
+    plt.title(f'Training and Validation Loss for Participant {participant}')
     plt.legend()
-    plt.savefig('results/lstm_ae/pure/checkpoints/94/losses.png')
+    plt.savefig(f'results/lstm_ae/pure/checkpoints/{participant}/losses.png')
     plt.close()
 
-    final_path = os.path.join(checkpoint_dir, "final_model_94.pth")
-    torch.save(model.state_dict(), final_path)  
+     
   
 
 
