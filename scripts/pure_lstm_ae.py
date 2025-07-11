@@ -9,7 +9,7 @@ def main():
     # Add project root to path
     sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
     data_path = "data" 
-    participant = "5C"
+    participant = "6B"
 
     from src.models.lstm_ae import MaskedLSTMAutoencoder
     from src.utils.losses import MaskedMSELoss
@@ -19,7 +19,7 @@ def main():
     # LSTM Autoencoder
     model = MaskedLSTMAutoencoder(
         input_size=43,
-        hidden_size=128,
+        hidden_size=64,
         num_layers=1,
         # dropout=0.2,
     )
@@ -44,7 +44,7 @@ def main():
 
     num_epochs = 200
     best_val_loss = float('inf')
-    checkpoint_dir = f"results/lstm_ae/pure/checkpoints/{participant}__"
+    checkpoint_dir = f"results/lstm_ae/pure/checkpoints/{participant}"
     os.makedirs(checkpoint_dir, exist_ok=True)
 
     # Parameters for early stopping
@@ -125,7 +125,7 @@ def main():
     plt.ylabel('Loss')
     plt.title(f'Training and Validation Loss for Participant {participant} with 32 hidden units')
     plt.legend()
-    plt.savefig(f'results/lstm_ae/pure/checkpoints/{participant}__/losses.png')
+    plt.savefig(f'results/lstm_ae/pure/checkpoints/{participant}/losses.png')
     plt.close()
 
      

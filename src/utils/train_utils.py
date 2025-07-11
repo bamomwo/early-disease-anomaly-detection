@@ -1,9 +1,9 @@
 import torch
 
-def train_one_epoch(model, data_loader, optimizer, device, loss_fn):
+def train_one_epoch(model, train_loader, optimizer, device, loss_fn):
     model.train()
     total_loss = 0
-    for batch in data_loader:
+    for batch in train_loader:
         # Assume batch returns x_filled and mask
         x_filled = batch['data'].to(device)
         mask = batch['mask'].to(device)
@@ -18,7 +18,7 @@ def train_one_epoch(model, data_loader, optimizer, device, loss_fn):
 
         total_loss += loss.item()
     
-    return total_loss / len(data_loader)
+    return total_loss / len(train_loader)
 
 
 

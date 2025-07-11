@@ -18,6 +18,8 @@ ID_COLUMN = 'session'      # columns to exclude from normalization
 TIME_COLUMN = 'timestamp'  # timestamp column to preserve time order
 FEATURE_COLUMNS = None     # will be inferred from the first file
 
+# List of features to exclude from normalization
+
 # ---------- FUNCTIONS ----------
 
 def normalize_participant(file_path, participant_id):

@@ -23,7 +23,7 @@ def main():
     )
 
     # Participants
-    participants = ["5C", "6B", "94"]
+    participants = ["5C", "6B", "6D", "7A", "7E", "8B", "94", "BG" ]
 
     # Optimizer and device
     optimizer = torch.optim.Adam(model.parameters(), lr=0.001)
@@ -32,7 +32,7 @@ def main():
     # Data loader
     loader_factory = PhysiologicalDataLoader(data_path)
     # train_loader, test_loader = loader_factory.create_personalized_loaders("5C")
-    train_loader, test_loader = loader_factory.create_general_loaders(participants)
+    train_loader, val_loader, _ = loader_factory.create_general_loaders(participants)
     # Loss function
     loss_fn = MaskedMSELoss()
 
@@ -40,6 +40,8 @@ def main():
     # Training loop 
     train_losses = []
     val_losses = []
+    start_epoch = 0
+
 
     num_epochs = 200
     best_val_loss = float('inf')
@@ -55,6 +57,8 @@ def main():
 
     # Resume training from checkpoint
     resume_path = os.path.join(checkpoint_dir, "best_model.pth")
+    losses_path = os.path.join(checkpoint_dir, f"losses.json")
+
     if os.path.exists(resume_path):
         print(f"Resuming from {resume_path}")
         checkpoint = torch.load(resume_path)
@@ -63,15 +67,22 @@ def main():
         best_val_loss = checkpoint['best_val_loss']
         patience_counter = checkpoint['patience_counter']
         start_epoch = checkpoint['epoch'] + 1
+
+
+        if os.path.exists(losses_path):
+            with open(losses_path, "r") as f:
+                loss_log = json.load(f)
+                train_losses = loss_log.get("train_losses", [])
+                val_losses = loss_log.get("val_losses", [])
     else:
         print("No checkpoint found, starting from scratch")
 
 
 
     # Training loop
-    for epoch in range(num_epochs):
+    for epoch in range(start_epoch, num_epochs):
         train_loss = train_one_epoch(model, train_loader, optimizer, device, loss_fn)
-        val_loss = validate(model, test_loader, device, loss_fn)
+        val_loss = validate(model, val_loader, device, loss_fn)
 
         train_losses.append(train_loss)
         val_losses.append(val_loss)
