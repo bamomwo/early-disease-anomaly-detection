@@ -231,7 +231,7 @@ class PhysiologicalDataLoader:
             'overlap': 0.2,
             'batch_size': 32,
             'shuffle': False,
-            'num_workers': 4,
+            'num_workers': 1,
             'pin_memory': False,
             'drop_last': False
         }

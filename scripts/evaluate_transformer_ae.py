@@ -36,7 +36,6 @@ def main():
     _, _, test_loader = loader_factory.create_personalized_loaders(participant)
     #train_loader, _, _ = loader_factory.create_general_loaders(participants)
 
-
     # 4. Define loss and evaluation loop
     loss_fn = MaskedMSELoss()
 
@@ -48,7 +47,6 @@ def main():
 
     # Optional: Save outputs or visualize sample reconstructions
     # e.g., plot a few sequences and their reconstructions
-
 
     # Convert lists to numpy arrays
     inputs = np.concatenate(all_inputs, axis=0)    # shape: (num_seq, seq_len, input_size)
@@ -66,11 +64,8 @@ def main():
     "another": 10
 }
 
-
     group_errors = compute_group_errors(inputs, outputs, feature_groups)
     print(group_errors)
-
-
 
     # Plot a few features (e.g., first 3 features)
     features_to_plot = [5, 6, 7, 8, 9]
