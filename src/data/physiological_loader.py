@@ -74,12 +74,12 @@ class PhysiologicalDataset(Dataset):
             self._load_participant_data(participant)
     
     def _load_participant_data(self, participant: str):
-        """Load data for a single participant."""
+        """Load data for a single participant from the new normalized structure."""
         try:
-            # Construct file paths based on your project structure
-            filled_path = self.data_path / 'filled' / self.data_type / f'{participant}_{self.data_type}_filled.csv'
-            mask_path = self.data_path / 'masks' / self.data_type / f'{participant}_{self.data_type}_mask.npy'
-            
+            # Construct file paths for the new structure
+            filled_path = self.data_path / self.data_type / 'filled' / f'{participant}_{self.data_type}_filled.csv'
+            mask_path = self.data_path / self.data_type / 'mask' / f'{participant}_{self.data_type}_mask.csv'
+
             print("Loading filled data from:", filled_path)
             print("Loading mask from:", mask_path)
 
@@ -87,47 +87,46 @@ class PhysiologicalDataset(Dataset):
             if not filled_path.exists():
                 logger.error(f"Filled data file not found: {filled_path}")
                 return
-            
             if not mask_path.exists():
                 logger.error(f"Mask data file not found: {mask_path}")
                 return
-            
+
             # Load filled data (NaNs replaced with zeros)
             filled_data_ = pd.read_csv(filled_path)
-            filled_data = filled_data_.drop(columns=['session','timestamp'])
+            # Drop non-feature columns if present
+            for col in ['session', 'timestamp', 'stress_level']:
+                if col in filled_data_.columns:
+                    filled_data_ = filled_data_.drop(columns=[col])
+            filled_data = filled_data_
 
-            # print("|=============== FILLED DATA STATS ===============|")
-            # print("Filled data shape:", filled_data.shape)
-            # print("|=============== END OF FILLED DATA STATS ===============| \n")
-
-            # Load mask data
-            mask_data = np.load(mask_path)
-            
-            # print("|=============== MASK DATA STATS ===============|")
-            # print("Mask shape:", mask_data.shape)
-            # print("Mask missing ratio:", 1 - mask_data.sum() / mask_data.size)
-            # print("|=============== END OF MASK DATA STATS ===============| \n")
+            # Load mask data (now as CSV for each split)
+            mask_data_ = pd.read_csv(mask_path)
+            # Drop non-feature columns if present
+            for col in ['session', 'timestamp', 'stress_level']:
+                if col in mask_data_.columns:
+                    mask_data_ = mask_data_.drop(columns=[col])
+            mask_data = mask_data_.values.astype(np.bool_)
 
             # Ensure mask and data have same shape
             if filled_data.shape != mask_data.shape:
                 logger.warning(f"Shape mismatch for participant {participant}: "
-                             f"data {filled_data.shape}, mask {mask_data.shape}")
+                               f"data {filled_data.shape}, mask {mask_data.shape}")
                 return
-            
+
             # Convert to numpy arrays
             filled_array = filled_data.values.astype(np.float32)
-            mask_array = mask_data.astype(np.bool_)
-            
+            mask_array = mask_data
+
             # Create sequences from windows
             sequences, masks = self._create_sequences(filled_array, mask_array)
-            
+
             # Store sequences
             self.sequences.extend(sequences)
             self.masks.extend(masks)
             self.participant_ids.extend([participant] * len(sequences))
-            
+
             logger.info(f"Loaded {len(sequences)} sequences for participant {participant}")
-            
+
         except Exception as e:
             logger.error(f"Error loading data for participant {participant}: {str(e)}")
             raise

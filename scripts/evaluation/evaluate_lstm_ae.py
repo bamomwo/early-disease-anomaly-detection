@@ -1,87 +1,99 @@
-import torch
-import matplotlib.pyplot as plt
-import numpy as np
-import os
+#!/usr/bin/env python
 import sys
+import os
+import json
+import argparse
+import numpy as np
+import torch
 
-# Add project root to path
-sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+# ── Project setup ──
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '../..')))
 
 from src.models.lstm_ae import MaskedLSTMAutoencoder
 from src.utils.losses import MaskedMSELoss
-from src.data.physiological_loader import PhysiologicalDataLoader
 from src.utils.train_utils import evaluate
-from src.utils.helpers import compute_group_errors
+from src.data.physiological_loader import PhysiologicalDataLoader
+from src.utils.helpers import (
+    get_sequence_labels,
+    plot_recon_error_distribution,
+    plot_roc_pr_curves,
+    plot_confusion_matrix
+)
 
 def main():
-    # 1. Set paths for model and device
-    participant = "BG"
-    data_path = "data" 
-    checkpoint_path = f"results/lstm_ae/pure/checkpoints/{participant}/best_model.pth"
-    
-    # Device to train on
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--participant",    default=None)
+    parser.add_argument("--model-path",     default=None,
+                        help="Path to the saved model checkpoint")
+    parser.add_argument("--data-path",      default="data/normalized")
+    parser.add_argument("--figs-dir",       default=None,
+                        help="Directory to save evaluation figures")
+    args = parser.parse_args()
+
+    # Resolve defaults based on participant
+    if args.model_path is None:
+        args.model_path = f"results/lstm_ae/pure/{args.participant}/final_model_{args.participant}.pth"
+    if args.figs_dir is None:
+        args.figs_dir = f"results/lstm_ae/pure/{args.participant}/figs"
+    os.makedirs(args.figs_dir, exist_ok=True)
+
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-    # 2. Load model
-    model = MaskedLSTMAutoencoder(input_size=43, hidden_size=64, num_layers=1)
-    model.load_state_dict(torch.load(checkpoint_path, map_location=device)["model_state_dict"])
+    # ── Load best hyperparameters from config ──
+    with open("results/lstm_ae/best_config.json") as f:
+        best_config = json.load(f)
+
+    # ── 1. Load trained model ──
+    model = MaskedLSTMAutoencoder(input_size=43, hidden_size=best_config["hidden_size"], num_layers=best_config["num_layers"])
+    ckpt = torch.load(args.model_path, map_location=device)
+    state_dict = ckpt.get("model_state_dict", ckpt)
+    model.load_state_dict(state_dict)
     model.to(device)
     model.eval()
 
-    # 3. Load test data
-    loader_factory = PhysiologicalDataLoader(data_path, config={"num_workers":0})
-    _, _, test_loader = loader_factory.create_personalized_loaders("5C")
+    # ── 2. Prepare test data ──
+    loader_factory = PhysiologicalDataLoader(args.data_path)
+    _, _, test_loader = loader_factory.create_personalized_loaders(args.participant)
 
-    # 4. Define loss and evaluation loop
+    # ── 3. Run evaluation to get reconstructions ──
     loss_fn = MaskedMSELoss()
-
-    # Use the new evaluate function
     avg_loss, all_inputs, all_outputs = evaluate(model, test_loader, device, loss_fn)
 
-    # 5. Analyze and visualize
-    print(f"Average test reconstruction loss: {avg_loss:.4f}")
+    # ── 4. Compute per-sequence errors & labels ──
+    inputs  = np.concatenate(all_inputs,  axis=0)  # (num_seq, seq_len, features)
+    outputs = np.concatenate(all_outputs, axis=0)
+    errors  = np.mean((inputs - outputs) ** 2, axis=(1,2))
+    labels  = get_sequence_labels(test_loader, args.participant, split="test")
 
-    # Optional: Save outputs or visualize sample reconstructions
-    # e.g., plot a few sequences and their reconstructions
+    # ── 5. Generate evaluation figures ──
 
+    # 5.1 Reconstruction Error Distribution
+    plot_recon_error_distribution(
+        labels, errors, out_dir=args.figs_dir
+    )
 
-    # Convert lists to numpy arrays
-    inputs = np.concatenate(all_inputs, axis=0)    # shape: (num_seq, seq_len, input_size)
-    outputs = np.concatenate(all_outputs, axis=0)  # shape: same
+    # 5.2 ROC & Precision-Recall Curves
+    plot_roc_pr_curves(
+        labels, errors, out_dir=args.figs_dir
+    )
 
-    # Select a sample sequence (e.g., index 0)
-    seq_idx = 0
-    seq_input = inputs[seq_idx]    # shape: (seq_len, input_size)
-    seq_output = outputs[seq_idx]  # same
-
-    # obtain reconstruction error for feature groups
-    feature_groups = {
-    "HR_related": [0, 1, 2, 3, 4],
-    "TEMP_related": [5, 6, 7, 8, 9],
-}
-
-
-    group_errors = compute_group_errors(inputs, outputs, feature_groups)
-    print(group_errors)
+    # 5.3 Confusion Matrix
+    plot_confusion_matrix(
+        labels, errors, out_dir=args.figs_dir
+    )
 
 
+    # # 5.3 Example Time-Series Reconstructions
+    # plot_time_series_reconstructions(
+    #     model, test_loader, device, out_dir=args.figs_dir
+    # )
 
-    # Plot a few features (e.g., first 3 features)
-    # features_to_plot = [0, 1, 2]
+    # # 5.4 Latent-Space Visualization
+    # plot_latent_space_viz(
+    #     model, test_loader, device, out_dir=args.figs_dir
+    # )
 
-    # plt.figure(figsize=(12, 6))
-    # for i, f in enumerate(features_to_plot):
-    #     plt.subplot(len(features_to_plot), 1, i+1)
-    #     plt.plot(seq_input[:, f], label=f"Original Feature {f}")
-    #     plt.plot(seq_output[:, f], label=f"Reconstructed Feature {f}", linestyle='--')
-    #     plt.legend()
-    #     plt.title(f"Feature {f} Reconstruction - Sequence {seq_idx}")
-    #     plt.tight_layout()
-
-    # plt.savefig("results/lstm_ae/pure/reconstruction_seq0.png")
-    # plt.show()
-    
+    print(f"All evaluation figures saved to {args.figs_dir}")
 
 if __name__ == "__main__":
     main()
-
