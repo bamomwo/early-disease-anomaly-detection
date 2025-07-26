@@ -21,7 +21,7 @@ from src.data.physiological_loader import PhysiologicalDataLoader
 DATA_PATH          = "data/normalized"
 PARTICIPANT        = "BG"
 DEVICE             = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-BEST_CONFIG_PATH   = f"results/transformer_ae/best_config.json"
+BEST_CONFIG_PATH   = f"results/transformer_config.json"
 CHECKPOINT_DIR     = f"results/transformer_ae/pure/{PARTICIPANT}"
 FIGS_DIR           = os.path.join(CHECKPOINT_DIR, "figs")
 
@@ -33,6 +33,8 @@ HYPERPARAM_SPACE = {
     "nhead":     [2, 4],
     "dropout":   [0.1, 0.2],
 }
+
+
 SEARCH_EPOCHS    = 50
 FINAL_EPOCHS     = 200
 PATIENCE         = 10

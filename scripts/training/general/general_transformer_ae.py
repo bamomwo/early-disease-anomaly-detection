@@ -1,141 +1,202 @@
+#!/usr/bin/env python
 import sys
 import os
 import json
+import argparse
+import itertools
+
 import torch
-import torch.nn as nn
 import matplotlib.pyplot as plt
 
-def main():
-    # Add project root to path
-    sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
-    data_path = "data" 
+# ── Project setup ──
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '../../..')))
 
-    from src.models.transformer_ae import  TransformerAutoencoder
-    from src.utils.losses import MaskedMSELoss
-    from src.utils.train_utils import train_one_epoch, validate
-    from src.data.physiological_loader import PhysiologicalDataLoader
+from src.utils.helpers import plot_loss_curves
+from src.models.transformer_ae import TransformerAutoencoder
+from src.utils.losses import MaskedMSELoss
+from src.utils.train_utils import train_one_epoch, validate
+from src.data.physiological_loader import PhysiologicalDataLoader
 
-    # Transformer Autoencoder
-    model = TransformerAutoencoder(
+# ── Constants ──
+DATA_PATH          = "data/normalized"
+PARTICIPANTS       = ["5C", "6B", "6D", "7A", "7E", "8B", "94", "BG"]
+DEVICE             = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+BEST_CONFIG_PATH   = f"config/transformer_config.json"
+CHECKPOINT_DIR     = f"results/transformer_ae/general"
+FIGS_DIR           = os.path.join(CHECKPOINT_DIR, "figs")
+
+# ── Hyperparam search settings ──
+HYPERPARAM_SPACE = {
+    "model_dim": [32, 64, 128],
+    "lr":        [1e-4, 5e-4, 1e-3],
+    "num_layers": [1, 2, 3],
+    "nhead":     [2, 4],
+    "dropout":   [0.1, 0.2],
+}
+SEARCH_EPOCHS    = 50
+FINAL_EPOCHS     = 200
+PATIENCE         = 10
+
+def train_and_evaluate(model_dim, lr, num_layers, nhead, dropout, num_epochs=SEARCH_EPOCHS):
+    """Train for up to num_epochs with early stopping; return best val loss."""
+    model     = TransformerAutoencoder(
         input_size=43,
-        model_dim=128,
-        num_layers=2,
-        nhead=4,
-        dropout=0.1
+        model_dim=model_dim,
+        num_layers=num_layers,
+        nhead=nhead,
+        dropout=dropout
     )
+    optimizer = torch.optim.Adam(model.parameters(), lr=lr)
+    loss_fn   = MaskedMSELoss()
 
-    # Participants
-    participants = ["5C", "6B", "6D", "7A", "7E", "8B", "94", "BG" ]
+    loader    = PhysiologicalDataLoader(DATA_PATH, config={'num_workers':1})
+    train_loader, val_loader, _ = loader.create_general_loaders(PARTICIPANTS)
+    model.to(DEVICE)
 
-    # Optimizer and device
-    optimizer = torch.optim.Adam(model.parameters(), lr=0.001)
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")   
-
-    # Data loader
-    loader_factory = PhysiologicalDataLoader(data_path, config={'num_workers':4})
-    train_loader, val_loader, _ = loader_factory.create_general_loaders(participants)
-   
-   
-    # Loss function
-    loss_fn = MaskedMSELoss()
-
-
-    # Training loop 
-    train_losses = []
-    val_losses = []
-    start_epoch = 0
-
-
-    num_epochs = 200
-    best_val_loss = float('inf')
-    checkpoint_dir = "results/transformer_ae/general"
-    os.makedirs(checkpoint_dir, exist_ok=True)
-
-    # Parameters for early stopping
-    patience = 10
+    best_val = float('inf')
     patience_counter = 0
 
-    # Move model to device
-    model.to(device)
+    for epoch in range(num_epochs):
+        train_loss = train_one_epoch(model, train_loader, optimizer, DEVICE, loss_fn)
+        val_loss   = validate(model, val_loader, DEVICE, loss_fn)
 
-    # Resume training from checkpoint
-    resume_path = os.path.join(checkpoint_dir, "best_model.pth")
-    losses_path = os.path.join(checkpoint_dir, f"losses.json")
+        if val_loss < best_val:
+            best_val = val_loss
+            patience_counter = 0
+        else:
+            patience_counter += 1
+            if patience_counter >= PATIENCE:
+                break
+
+    return best_val
+
+def do_grid_search():
+    """Loop over hyperparameter combinations; return the best-config dict."""
+    best_score  = float('inf')
+    best_config = None
+
+    for md, lr, nl, nh, do in itertools.product(
+            HYPERPARAM_SPACE["model_dim"],
+            HYPERPARAM_SPACE["lr"],
+            HYPERPARAM_SPACE["num_layers"],
+            HYPERPARAM_SPACE["nhead"],
+            HYPERPARAM_SPACE["dropout"]):
+        val = train_and_evaluate(md, lr, nl, nh, do)
+        print(f"[SEARCH] model_dim={md}, lr={lr:.0e}, num_layers={nl}, nhead={nh}, dropout={do} → val_loss={val:.4f}")
+        if val < best_score:
+            best_score  = val
+            best_config = {"model_dim": md, "lr": lr, "num_layers": nl, "nhead": nh, "dropout": do}
+
+    print(f"→ Best hyperparams: {best_config}, val_loss={best_score:.4f}")
+    return best_config
+
+def train_final(model_dim, lr, num_layers, nhead, dropout):
+    """Train a final model using the best hyperparams, with checkpoints & loss plotting."""
+    model     = TransformerAutoencoder(
+        input_size=43,
+        model_dim=model_dim,
+        num_layers=num_layers,
+        nhead=nhead,
+        dropout=dropout
+    )
+    optimizer = torch.optim.Adam(model.parameters(), lr=lr)
+    loss_fn   = MaskedMSELoss()
+
+    loader    = PhysiologicalDataLoader(DATA_PATH, config={'num_workers':1})
+    train_loader, val_loader, _ = loader.create_general_loaders(PARTICIPANTS)
+    model.to(DEVICE)
+
+    os.makedirs(FIGS_DIR, exist_ok=True)
+    os.makedirs(CHECKPOINT_DIR, exist_ok=True)
+
+    # Attempt to resume
+    resume_path = os.path.join(CHECKPOINT_DIR, "best_model.pth")
+    losses_path = os.path.join(CHECKPOINT_DIR, "losses.json")
+
+    start_epoch      = 0
+    train_losses     = []
+    val_losses       = []
+    best_val_loss    = float('inf')
+    patience_counter = 0
 
     if os.path.exists(resume_path):
-        print(f"Resuming from {resume_path}")
-        checkpoint = torch.load(resume_path)
-        model.load_state_dict(checkpoint['model_state_dict'])
-        optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
-        best_val_loss = checkpoint['best_val_loss']
-        patience_counter = checkpoint['patience_counter']
-        start_epoch = checkpoint['epoch'] + 1
-
+        ckpt = torch.load(resume_path)
+        model.load_state_dict(ckpt['model_state_dict'])
+        optimizer.load_state_dict(ckpt['optimizer_state_dict'])
+        best_val_loss    = ckpt['best_val_loss']
+        patience_counter = ckpt['patience_counter']
+        start_epoch      = ckpt['epoch'] + 1
 
         if os.path.exists(losses_path):
-            with open(losses_path, "r") as f:
-                loss_log = json.load(f)
-                train_losses = loss_log.get("train_losses", [])
-                val_losses = loss_log.get("val_losses", [])
-    else:
-        print("No checkpoint found, starting from scratch")
+            with open(losses_path) as f:
+                log = json.load(f)
+                train_losses = log.get("train_losses", [])
+                val_losses   = log.get("val_losses", [])
+        print(f"[TRAIN] Resumed from epoch {start_epoch}")
 
+    for epoch in range(start_epoch, FINAL_EPOCHS):
+        t_loss = train_one_epoch(model, train_loader, optimizer, DEVICE, loss_fn)
+        v_loss = validate(model, val_loader, DEVICE, loss_fn)
 
+        train_losses.append(t_loss)
+        val_losses.append(v_loss)
 
-    # Training loop
-    for epoch in range(start_epoch, num_epochs):
-        train_loss = train_one_epoch(model, train_loader, optimizer, device, loss_fn)
-        val_loss = validate(model, val_loader, device, loss_fn)
-
-        train_losses.append(train_loss)
-        val_losses.append(val_loss)
-
-
-        # Saving the best model
-        if val_loss < best_val_loss:
-            best_val_loss = val_loss
+        if v_loss < best_val_loss:
+            best_val_loss    = v_loss
             patience_counter = 0
-            best_path = os.path.join(checkpoint_dir, "best_model.pth")
             torch.save({
                 'epoch': epoch,
                 'model_state_dict': model.state_dict(),
                 'optimizer_state_dict': optimizer.state_dict(),
                 'best_val_loss': best_val_loss,
                 'patience_counter': patience_counter
-            }, best_path)
-
+            }, resume_path)
         else:
             patience_counter += 1
-            if patience_counter >= patience:
-                print(f"Early stopping triggered at epoch {epoch+1}")
+            if patience_counter >= PATIENCE:
+                print(f"[TRAIN] Early stopping at epoch {epoch+1}")
                 break
 
-        print(f"Epoch {epoch+1}/{num_epochs} | Train Loss: {train_loss:.4f} | Val Loss: {val_loss:.4f}")
-    
-    # Saving the losses
-    loss_log = {
-        "train_losses": train_losses,
-        "val_losses": val_losses
-    }
-    with open(os.path.join(checkpoint_dir, f"losses.json"), "w") as f:
-        json.dump(loss_log, f)
+        print(f"[TRAIN] Epoch {epoch+1}/{FINAL_EPOCHS}  train={t_loss:.4f}  val={v_loss:.4f}")
 
-    # Saving final model
-    final_path = os.path.join(checkpoint_dir, "final_model.pth")
-    torch.save(model.state_dict(), final_path) 
+    # Save losses and final model
+    with open(losses_path, "w") as f:
+        json.dump({"train_losses": train_losses, "val_losses": val_losses}, f)
 
+    final_model_path = os.path.join(CHECKPOINT_DIR, "final_model.pth")
+    torch.save(model.state_dict(), final_model_path)
 
+    # Use the new helper function
+    plot_loss_curves(train_losses, val_losses, model_dim, num_layers, FIGS_DIR)
 
-    # Plotting the losses
-    plt.figure(figsize=(10, 5))
-    plt.plot(train_losses, label='Train Loss')
-    plt.plot(val_losses, label='Val Loss')
-    plt.legend()
-    plt.savefig('results/transformer_ae/general/losses.png')
-    plt.close()
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument(
+        "--mode",
+        choices=["search", "train"],
+        default="train",
+        help="Mode 'search': run grid search & cache best params. 'train': load cached params & train final model."
+    )
+    args = parser.parse_args()
 
- 
-  
+    if args.mode == "search":
+        best_cfg = do_grid_search()
+        os.makedirs(os.path.dirname(BEST_CONFIG_PATH), exist_ok=True)
+        with open(BEST_CONFIG_PATH, "w") as f:
+            json.dump(best_cfg, f, indent=2)
+        print(f"[SEARCH] Saved best config to {BEST_CONFIG_PATH}")
+
+    elif args.mode == "train":
+        if not os.path.exists(BEST_CONFIG_PATH):
+            raise FileNotFoundError(
+                f"No cached config found at {BEST_CONFIG_PATH}. "
+                "Run with `--mode search` first."
+            )
+        with open(BEST_CONFIG_PATH) as f:
+            cfg = json.load(f)
+        print(f"[TRAIN] Loaded hyperparams: {cfg}")
+        train_final(**cfg)
+
 if __name__ == "__main__":
     main()
 

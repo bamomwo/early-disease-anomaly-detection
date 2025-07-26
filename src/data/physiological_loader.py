@@ -32,7 +32,8 @@ class PhysiologicalDataset(Dataset):
         overlap: float = 0.5,
         data_type: str = 'train',
         normalize: bool = True,
-        return_participant_id: bool = True
+        return_participant_id: bool = True,
+        selected_features_path: Optional[str] = None
     ):
         """
         Initialize the dataset.
@@ -53,6 +54,12 @@ class PhysiologicalDataset(Dataset):
         self.data_type = data_type
         self.normalize = normalize
         self.return_participant_id = return_participant_id
+        # ── load your JSON list of "features we actually want" ──
+        if selected_features_path:
+            with open(selected_features_path, 'r') as f:
+                self.selected_features = json.load(f)['features']
+        else:
+            self.selected_features = None
         
         # Calculate step size for sequence creation
         self.step_size = max(1, int(sequence_length * (1 - overlap)))
@@ -93,18 +100,27 @@ class PhysiologicalDataset(Dataset):
 
             # Load filled data (NaNs replaced with zeros)
             filled_data_ = pd.read_csv(filled_path)
-            # Drop non-feature columns if present
-            for col in ['session', 'timestamp', 'stress_level']:
-                if col in filled_data_.columns:
-                    filled_data_ = filled_data_.drop(columns=[col])
+            # Drop non-feature columns
+            to_drop = [c for c in ('session','timestamp','stress_level') if c in filled_data_.columns]
+            filled_data_ = filled_data_.drop(columns=to_drop)
+
+            # ── subset to only your selected features ──
+            if self.selected_features:
+                missing = set(self.selected_features) - set(filled_data_.columns)
+                if missing:
+                    logger.error(f"Selected features not found for {participant}: {missing}")
+                filled_data_ = filled_data_[self.selected_features]
             filled_data = filled_data_
 
             # Load mask data (now as CSV for each split)
             mask_data_ = pd.read_csv(mask_path)
-            # Drop non-feature columns if present
-            for col in ['session', 'timestamp', 'stress_level']:
-                if col in mask_data_.columns:
-                    mask_data_ = mask_data_.drop(columns=[col])
+            # Drop the same non-feature columns
+            mask_data_ = mask_data_.drop(columns=to_drop, errors='ignore')
+
+            # ── subset mask to the same selected features ──
+            if self.selected_features:
+                mask_data_ = mask_data_[self.selected_features]
+            
             mask_data = mask_data_.values.astype(np.bool_)
 
             # Ensure mask and data have same shape
@@ -232,7 +248,9 @@ class PhysiologicalDataLoader:
             'shuffle': False,
             'num_workers': 1,
             'pin_memory': False,
-            'drop_last': False
+            'drop_last': False,
+            # point this at your JSON of "features to use"
+            'selected_features_path': 'config/selected_features.json'
         }
         
         # Merge with user config
@@ -264,7 +282,9 @@ class PhysiologicalDataLoader:
             participants=participants,
             sequence_length=config['sequence_length'],
             overlap=config['overlap'],
-            data_type=data_type
+            data_type=data_type,
+            # hand off your feature‐list here:
+            selected_features_path=config.get('selected_features_path')
         )
         
         # Create DataLoader

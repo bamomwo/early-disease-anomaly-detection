@@ -1,4 +1,5 @@
 import torch
+import numpy as np
 
 def train_one_epoch(model, train_loader, optimizer, device, loss_fn):
     model.train()
@@ -58,3 +59,22 @@ def evaluate(model, test_loader, device, loss_fn):
     avg_loss = sum(all_losses) / len(all_losses) if all_losses else 0.0
     return avg_loss, all_inputs, all_outputs
     
+def extract_latents(model, loader, device):
+    latents, labels = [], []
+    with torch.no_grad():
+        for batch in loader:
+            x_filled = batch['data'].to(device)
+            mask = batch['mask'].to(device)
+            y = batch['labels'] if 'labels' in batch else None
+            
+            z = model.get_latent_representation(x_filled)  # Shape: (batch_size, latent_dim)
+            latents.append(z.cpu().numpy())
+            if y is not None:
+                labels.append(y.numpy())
+    
+    # Concatenate all batches into a single array
+    latents = np.concatenate(latents, axis=0)  # Shape: (total_samples, latent_dim)
+    if labels:
+        labels = np.concatenate(labels, axis=0)
+    
+    return latents, labels

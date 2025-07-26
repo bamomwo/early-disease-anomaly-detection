@@ -6,6 +6,7 @@ import argparse
 import numpy as np
 import torch
 
+
 # ── Project setup ──
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '../..')))
 
@@ -17,7 +18,8 @@ from src.utils.helpers import (
     get_sequence_labels,
     plot_recon_error_distribution,
     plot_roc_pr_curves,
-    plot_confusion_matrix
+    plot_confusion_matrix,
+    plot_time_series_reconstructions
 )
 
 def main():
@@ -58,6 +60,7 @@ def main():
     # ── 3. Run evaluation to get reconstructions ──
     loss_fn = MaskedMSELoss()
     avg_loss, all_inputs, all_outputs = evaluate(model, test_loader, device, loss_fn)
+    # latents, lt_labels = extract_latents(model, test_loader, device)
 
     # ── 4. Compute per-sequence errors & labels ──
     inputs  = np.concatenate(all_inputs,  axis=0)  # (num_seq, seq_len, features)
@@ -83,14 +86,14 @@ def main():
     )
 
 
-    # # 5.3 Example Time-Series Reconstructions
-    # plot_time_series_reconstructions(
-    #     model, test_loader, device, out_dir=args.figs_dir
-    # )
+    # 5.4 Example Time-Series Reconstructions
+    plot_time_series_reconstructions(
+        inputs, outputs, labels , out_dir=args.figs_dir
+    )
 
-    # # 5.4 Latent-Space Visualization
+    # 5.5 Latent-Space Visualization
     # plot_latent_space_viz(
-    #     model, test_loader, device, out_dir=args.figs_dir
+    #     latents, lt_labels, out_dir=args.figs_dir
     # )
 
     print(f"All evaluation figures saved to {args.figs_dir}")

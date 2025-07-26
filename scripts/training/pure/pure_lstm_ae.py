@@ -21,7 +21,7 @@ from src.data.physiological_loader import PhysiologicalDataLoader
 DATA_PATH          = "data/normalized"
 PARTICIPANT        = "BG"
 DEVICE             = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-BEST_CONFIG_PATH   = f"results/lstm_ae/best_config.json"
+BEST_CONFIG_PATH   = f"config/lstm_config.json"
 CHECKPOINT_DIR     = f"results/lstm_ae/pure/{PARTICIPANT}"
 FIGS_DIR           = os.path.join(CHECKPOINT_DIR, "figs")
 

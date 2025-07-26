@@ -3,6 +3,7 @@ import matplotlib.pyplot as plt
 import os
 import seaborn as sns
 import pandas as pd
+from sklearn.decomposition import PCA
 from sklearn.metrics import (
     roc_auc_score,
     roc_curve,
@@ -85,6 +86,34 @@ def plot_loss_curves(train_losses, val_losses, hidden_size, num_layers, figs_dir
     plt.savefig(os.path.join(figs_dir, 'loss_curve_pub.png'), dpi=300)
     plt.close()
 
+# Get Sequence Labels for evaluation
+def get_sequence_labels(test_loader, participant_id, split='test'):
+    """
+    For each sequence, assign a binary label:
+    0 = stress-free (all time steps in sequence are stress-free)
+    1 = stressed (any time step in sequence is stressed)
+    """
+    # Path to the original normalized data (with stress_level column)
+    norm_path = f"data/normalized/{split}/norm/{participant_id}_{split}_norm.csv"
+    if not os.path.exists(norm_path):
+        raise FileNotFoundError(f"Could not find: {norm_path}")
+    df_pd = pd.read_csv(norm_path)
+    if 'stress_level' not in df_pd.columns:
+        raise ValueError("stress_level column not found in test data.")
+    stress_labels = df_pd['stress_level'].values
+    # Get sequence length and step size from loader
+    seq_len = test_loader.dataset.sequence_length
+    step_size = test_loader.dataset.step_size
+    n_windows = len(stress_labels)
+    sequence_labels = []
+    # For each sequence, assign label 1 if any time step is stressed, else 0
+    for start_idx in range(0, n_windows - seq_len + 1, step_size):
+        end_idx = start_idx + seq_len
+        seq_labels = stress_labels[start_idx:end_idx]
+        label = 1 if np.any(seq_labels > 0) else 0
+        sequence_labels.append(label)
+    return np.array(sequence_labels)
+
 # Reconstruction error distribution during validation. 
 def plot_recon_error_distribution(labels, errors, out_dir, bins=50):
     """
@@ -130,6 +159,7 @@ def plot_recon_error_distribution(labels, errors, out_dir, bins=50):
     plt.savefig(png_path, dpi=300)  # high-res raster
     plt.close()
 
+# ROC and PR curves with AOC value
 def plot_roc_pr_curves(labels, errors, out_dir):
     """
     Plot and save ROC and Precision-Recall curves.
@@ -169,6 +199,7 @@ def plot_roc_pr_curves(labels, errors, out_dir):
     plt.savefig(os.path.join(out_dir, 'pr_curve.png'), dpi=300)
     plt.close()
 
+# Confuction Matrix with F1-Score
 def plot_confusion_matrix(labels, errors, out_dir):
     """
     Compute best-threshold via F1, plot and save confusion matrix at that threshold.
@@ -210,29 +241,71 @@ def plot_confusion_matrix(labels, errors, out_dir):
     plt.savefig(os.path.join(out_dir, 'confusion_matrix.png'), dpi=300)
     plt.close()
 
-def get_sequence_labels(test_loader, participant_id, split='test'):
+# Latent Space visualisation with PCA
+def plot_latent_space_viz(latents, labels, out_dir):
     """
-    For each sequence, assign a binary label:
-    0 = stress-free (all time steps in sequence are stress-free)
-    1 = stressed (any time step in sequence is stressed)
+    Plot a 2D PCA of latent vectors, colored by label.
+
+    Args:
+        latents (np.ndarray): shape (num_seq, latent_dim)
+        labels (np.ndarray): 1D array of sequence labels
+        out_dir (str): directory to save plots
     """
-    # Path to the original normalized data (with stress_level column)
-    norm_path = f"data/normalized/{split}/norm/{participant_id}_{split}_norm.csv"
-    if not os.path.exists(norm_path):
-        raise FileNotFoundError(f"Could not find: {norm_path}")
-    df_pd = pd.read_csv(norm_path)
-    if 'stress_level' not in df_pd.columns:
-        raise ValueError("stress_level column not found in test data.")
-    stress_labels = df_pd['stress_level'].values
-    # Get sequence length and step size from loader
-    seq_len = test_loader.dataset.sequence_length
-    step_size = test_loader.dataset.step_size
-    n_windows = len(stress_labels)
-    sequence_labels = []
-    # For each sequence, assign label 1 if any time step is stressed, else 0
-    for start_idx in range(0, n_windows - seq_len + 1, step_size):
-        end_idx = start_idx + seq_len
-        seq_labels = stress_labels[start_idx:end_idx]
-        label = 1 if np.any(seq_labels > 0) else 0
-        sequence_labels.append(label)
-    return np.array(sequence_labels)
+    pca = PCA(n_components=2)
+    coords = pca.fit_transform(latents)
+
+    plt.figure(figsize=(6, 6))
+    for cls, name in [(0, 'Normal'), (1, 'Stress')]:
+        idx = labels == cls
+        plt.scatter(coords[idx, 0], coords[idx, 1], alpha=0.6, label=name)
+    plt.xlabel('PC 1')
+    plt.ylabel('PC 2')
+    plt.title('Latent Space PCA')
+    plt.legend()
+    plt.tight_layout()
+    os.makedirs(out_dir, exist_ok=True)
+    plt.savefig(os.path.join(out_dir, 'latent_space.pdf'))
+    plt.savefig(os.path.join(out_dir, 'latent_space.png'), dpi=300)
+    plt.close()
+
+# Reconstruction Examples
+def plot_time_series_reconstructions(inputs, outputs, labels, out_dir, indices=None):
+    """
+    Plot example input vs. reconstructed time-series windows.
+
+    Args:
+        inputs (np.ndarray): shape (num_seq, seq_len, features)
+        outputs (np.ndarray): same shape as inputs
+        labels (np.ndarray): 1D array of sequence labels
+        indices (list[int] or None): which sequences to plot; defaults to first 3
+        out_dir (str): directory to save plots
+    """
+    num_seq = inputs.shape[0]
+    if indices is None:
+        indices = list(range(min(3, num_seq)))
+    plt.figure(figsize=(10, 3 * len(indices)))
+    for i, idx in enumerate(indices, 1):
+        inp = inputs[idx]
+        outp = outputs[idx]
+        label = labels[idx]
+        label_text = 'Normal' if label == 0 else 'Stress'
+
+        inp_avg = inp.mean(axis=1)
+        outp_avg = outp.mean(axis=1)
+
+        ax = plt.subplot(len(indices), 1, i)
+        ax.plot(inp_avg, label='Original')
+        ax.plot(outp_avg, label='Reconstruction')
+        ax.set_title(f'Example {i} (label={label_text})')
+        if i == len(indices):
+            ax.set_xlabel('Time Step')
+        ax.set_ylabel('Avg Signal')
+        if i == 1:
+            ax.legend()
+    plt.tight_layout()
+    os.makedirs(out_dir, exist_ok=True)
+    plt.savefig(os.path.join(out_dir, 'time_series_recon.pdf'))
+    plt.savefig(os.path.join(out_dir, 'time_series_recon.png'), dpi=300)
+    plt.close()
+
+
