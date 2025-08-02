@@ -19,9 +19,10 @@ from src.data.physiological_loader import PhysiologicalDataLoader
 
 # ── Constants ──
 DATA_PATH          = "data/normalized"
-PARTICIPANT        = "BG"
+PARTICIPANT        = "94"
 DEVICE             = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-BEST_CONFIG_PATH   = f"results/transformer_config.json"
+BEST_CONFIG_PATH   = f"config/transformer_config.json"
+SELECTED_FEATURES_PATH = "config/selected_features.json"
 CHECKPOINT_DIR     = f"results/transformer_ae/pure/{PARTICIPANT}"
 FIGS_DIR           = os.path.join(CHECKPOINT_DIR, "figs")
 
@@ -39,9 +40,18 @@ SEARCH_EPOCHS    = 50
 FINAL_EPOCHS     = 200
 PATIENCE         = 10
 
+def get_input_size_from_selected_features():
+    """Load selected features file and return the number of features."""
+    with open(SELECTED_FEATURES_PATH, 'r') as f:
+        selected_features = json.load(f)
+    return len(selected_features['features'])
+
 def train_and_evaluate(model_dim, lr, num_layers, nhead, dropout, num_epochs=SEARCH_EPOCHS):
+    # Get dynamic input size from selected features
+    input_size = get_input_size_from_selected_features()
+    
     model     = TransformerAutoencoder(
-        input_size=43,
+        input_size=input_size,
         model_dim=model_dim,
         num_layers=num_layers,
         nhead=nhead,
@@ -91,8 +101,11 @@ def do_grid_search():
     return best_config
 
 def train_final(model_dim, lr, num_layers, nhead, dropout):
+    # Get dynamic input size from selected features
+    input_size = get_input_size_from_selected_features()
+    
     model     = TransformerAutoencoder(
-        input_size=43,
+        input_size=input_size,
         model_dim=model_dim,
         num_layers=num_layers,
         nhead=nhead,

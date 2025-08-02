@@ -19,7 +19,7 @@ from src.data.physiological_loader import PhysiologicalDataLoader
 
 # ── Constants ──
 DATA_PATH          = "data/normalized"
-PARTICIPANT        = "BG"
+PARTICIPANT        = "7A"
 DEVICE             = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 BEST_CONFIG_PATH   = f"config/lstm_config.json"
 CHECKPOINT_DIR     = f"results/lstm_ae/pure/{PARTICIPANT}"

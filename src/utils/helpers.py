@@ -92,29 +92,93 @@ def get_sequence_labels(test_loader, participant_id, split='test'):
     For each sequence, assign a binary label:
     0 = stress-free (all time steps in sequence are stress-free)
     1 = stressed (any time step in sequence is stressed)
+    
+    Args:
+        test_loader: DataLoader containing test sequences
+        participant_id: Single participant ID (str) or list of participant IDs
+        split: Data split ('train', 'val', 'test')
+    
+    Returns:
+        np.ndarray: Binary labels for each sequence
     """
-    # Path to the original normalized data (with stress_level column)
-    norm_path = f"data/normalized/{split}/norm/{participant_id}_{split}_norm.csv"
-    if not os.path.exists(norm_path):
-        raise FileNotFoundError(f"Could not find: {norm_path}")
-    df_pd = pd.read_csv(norm_path)
-    if 'stress_level' not in df_pd.columns:
-        raise ValueError("stress_level column not found in test data.")
-    stress_labels = df_pd['stress_level'].values
-    # Get sequence length and step size from loader
-    seq_len = test_loader.dataset.sequence_length
-    step_size = test_loader.dataset.step_size
-    n_windows = len(stress_labels)
-    sequence_labels = []
-    # For each sequence, assign label 1 if any time step is stressed, else 0
-    for start_idx in range(0, n_windows - seq_len + 1, step_size):
-        end_idx = start_idx + seq_len
-        seq_labels = stress_labels[start_idx:end_idx]
-        label = 1 if np.any(seq_labels > 0) else 0
-        sequence_labels.append(label)
-    return np.array(sequence_labels)
+    # Handle both single participant and multiple participants
+    if isinstance(participant_id, str):
+        participant_ids = [participant_id]
+    else:
+        participant_ids = participant_id
+    
+    all_sequence_labels = []
+    
+    for pid in participant_ids:
+        # Path to the original normalized data (with stress_level column)
+        norm_path = f"data/normalized/{split}/norm/{pid}_{split}_norm.csv"
+        if not os.path.exists(norm_path):
+            raise FileNotFoundError(f"Could not find: {norm_path}")
+        df_pd = pd.read_csv(norm_path)
+        if 'stress_level' not in df_pd.columns:
+            raise ValueError("stress_level column not found in test data.")
+        stress_labels = df_pd['stress_level'].values
+        # Get sequence length and step size from loader
+        seq_len = test_loader.dataset.sequence_length
+        step_size = test_loader.dataset.step_size
+        n_windows = len(stress_labels)
+        sequence_labels = []
+        # For each sequence, assign label 1 if any time step is stressed, else 0
+        for start_idx in range(0, n_windows - seq_len + 1, step_size):
+            end_idx = start_idx + seq_len
+            seq_labels = stress_labels[start_idx:end_idx]
+            label = 1 if np.any(seq_labels > 0) else 0
+            sequence_labels.append(label)
+        all_sequence_labels.extend(sequence_labels)
+    
+    return np.array(all_sequence_labels)
 
 # Reconstruction error distribution during validation. 
+# def plot_recon_error_distribution(labels, errors, out_dir, bins=50):
+#     """
+#     Plot and save the reconstruction‐error distributions for normal vs. stress windows.
+
+#     Args:
+#         errors (np.ndarray): 1D array of reconstruction errors (one per window).
+#         labels (np.ndarray): 1D binary array of same length (0=normal, 1=stress).
+#         out_dir (str): Directory where figures will be saved.
+#         bins (int): Number of histogram bins.
+#     """
+#     # Split errors
+#     normal_err = errors[labels == 0]
+#     stress_err = errors[labels == 1]
+
+#     # Summary stats
+#     mu_n, sigma_n = normal_err.mean(), normal_err.std()
+#     mu_s, sigma_s = stress_err.mean(), stress_err.std()
+
+#     # 95th percentile threshold (normal)
+#     thresh = np.percentile(normal_err, 95)
+
+#     # Create plot
+#     plt.figure(figsize=(8, 5))
+#     plt.hist(normal_err, bins=bins, density=True, alpha=0.5,
+#              label=f'Normal (μ={mu_n:.2f}, σ={sigma_n:.2f})')
+#     plt.hist(stress_err, bins=bins, density=True, alpha=0.5,
+#              label=f'Anomalous (μ={mu_s:.2f}, σ={sigma_s:.2f})')
+#     plt.axvline(thresh, color='k', linestyle='--',
+#                 label=f'95th %ile normal = {thresh:.2f}')
+
+#     plt.xlabel('Reconstruction Error')
+#     plt.ylabel('Density')
+#     plt.title('Reconstruction Error Distribution')
+#     plt.legend(fontsize='small')
+#     plt.tight_layout()
+
+#     # Save high‐quality figures
+#     os.makedirs(out_dir, exist_ok=True)
+#     pdf_path = os.path.join(out_dir, 'recon_error_dist.pdf')
+#     png_path = os.path.join(out_dir, 'recon_error_dist.png')
+#     plt.savefig(pdf_path)         # vector for publication
+#     plt.savefig(png_path, dpi=300)  # high-res raster
+#     plt.close()
+
+
 def plot_recon_error_distribution(labels, errors, out_dir, bins=50):
     """
     Plot and save the reconstruction‐error distributions for normal vs. stress windows.
@@ -125,9 +189,21 @@ def plot_recon_error_distribution(labels, errors, out_dir, bins=50):
         out_dir (str): Directory where figures will be saved.
         bins (int): Number of histogram bins.
     """
-    # Split errors
+    # Ensure finite values
+    finite_mask = np.isfinite(errors) & np.isfinite(labels)
+    errors = errors[finite_mask]
+    labels = labels[finite_mask]
+
+    # Split and clean each class separately
     normal_err = errors[labels == 0]
     stress_err = errors[labels == 1]
+
+    normal_err = normal_err[np.isfinite(normal_err)]
+    stress_err = stress_err[np.isfinite(stress_err)]
+
+    if len(normal_err) == 0 or len(stress_err) == 0:
+        print("WARNING: One of the classes has no valid error values to plot.")
+        return
 
     # Summary stats
     mu_n, sigma_n = normal_err.mean(), normal_err.std()
@@ -151,13 +227,12 @@ def plot_recon_error_distribution(labels, errors, out_dir, bins=50):
     plt.legend(fontsize='small')
     plt.tight_layout()
 
-    # Save high‐quality figures
+    # Save figures
     os.makedirs(out_dir, exist_ok=True)
-    pdf_path = os.path.join(out_dir, 'recon_error_dist.pdf')
-    png_path = os.path.join(out_dir, 'recon_error_dist.png')
-    plt.savefig(pdf_path)         # vector for publication
-    plt.savefig(png_path, dpi=300)  # high-res raster
+    plt.savefig(os.path.join(out_dir, 'recon_error_dist.pdf'))         # vector
+    plt.savefig(os.path.join(out_dir, 'recon_error_dist.png'), dpi=300)  # raster
     plt.close()
+
 
 # ROC and PR curves with AOC value
 def plot_roc_pr_curves(labels, errors, out_dir):

@@ -45,36 +45,38 @@ def evaluate(model, test_loader, device, loss_fn):
     all_losses = []
     all_inputs = []
     all_outputs = []
+    all_masks  = []              # ← new
+
     for batch in test_loader:
         x_filled = batch['data'].to(device)
-        mask = batch['mask'].to(device)
+        mask     = batch['mask'].to(device)
 
         y_pred = model(x_filled)
-        loss = loss_fn(y_pred, x_filled, mask)
+        loss   = loss_fn(y_pred, x_filled, mask)
 
         all_losses.append(loss.item())
         all_inputs.append(x_filled.cpu().numpy())
         all_outputs.append(y_pred.cpu().numpy())
+        all_masks.append( mask.cpu().numpy() )    # ← append here
 
     avg_loss = sum(all_losses) / len(all_losses) if all_losses else 0.0
-    return avg_loss, all_inputs, all_outputs
+    return avg_loss, all_inputs, all_outputs, all_masks   # ← return masks
+
     
+
+
+# ── Correct extract_latents logic ──
 def extract_latents(model, loader, device):
-    latents, labels = [], []
+    latents = []
+    model.eval()
     with torch.no_grad():
         for batch in loader:
-            x_filled = batch['data'].to(device)
-            mask = batch['mask'].to(device)
-            y = batch['labels'] if 'labels' in batch else None
-            
-            z = model.get_latent_representation(x_filled)  # Shape: (batch_size, latent_dim)
+            x_filled = batch['data'].to(device)                     
+            # grab the final hidden state per window
+            z = model.get_latent_representation(x_filled)         # (batch_size, latent_dim)
             latents.append(z.cpu().numpy())
-            if y is not None:
-                labels.append(y.numpy())
-    
-    # Concatenate all batches into a single array
-    latents = np.concatenate(latents, axis=0)  # Shape: (total_samples, latent_dim)
-    if labels:
-        labels = np.concatenate(labels, axis=0)
-    
-    return latents, labels
+
+    # concatenate all batches into one (num_seq, latent_dim) array
+    return np.concatenate(latents, axis=0)
+
+

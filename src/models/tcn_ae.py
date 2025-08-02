@@ -91,6 +91,9 @@ class TCNAutoencoder(nn.Module):
 
     def get_latent_representation(self, x):
         with torch.no_grad():
+            # x: (batch, seq_len, features)  → TCN expects (batch, features, seq_len)
             x = x.permute(0, 2, 1)
-            encoded = self.encoder(x)
-            return encoded.permute(0, 2, 1)  # (batch, seq_len, latent_size)
+            encoded = self.encoder(x)         # (batch, latent_size, seq_len)
+            last_step = encoded[:, :, -1]     # (batch, latent_size)
+            return last_step 
+
