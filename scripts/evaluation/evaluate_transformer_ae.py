@@ -24,6 +24,15 @@ from src.utils.helpers import (
     plot_time_series_reconstructions
 )
 
+# ── Constants ──
+SELECTED_FEATURES_PATH = "config/selected_features.json"
+
+def get_input_size_from_selected_features():
+    """Load selected features file and return the number of features."""
+    with open(SELECTED_FEATURES_PATH, 'r') as f:
+        selected_features = json.load(f)
+    return len(selected_features['features'])
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--model-type", choices=["personalized", "general"], 
@@ -90,8 +99,8 @@ def main():
     # ── 1. Load trained model ──
     # Determine input size
     if args.input_size is None:
-        # Try to get input size from config or determine from data
-        input_size = model_config.get("input_size", 43)  # fallback to 43
+        # Get input size from selected features file
+        input_size = get_input_size_from_selected_features()
     else:
         input_size = args.input_size
     

@@ -19,9 +19,10 @@ from src.data.physiological_loader import PhysiologicalDataLoader
 
 # ── Constants ──
 DATA_PATH          = "data/normalized"
-PARTICIPANT        = "7A"
+PARTICIPANT        = "BG"
 DEVICE             = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 BEST_CONFIG_PATH   = f"config/lstm_config.json"
+SELECTED_FEATURES_PATH = "config/selected_features.json"
 CHECKPOINT_DIR     = f"results/lstm_ae/pure/{PARTICIPANT}"
 FIGS_DIR           = os.path.join(CHECKPOINT_DIR, "figs")
 
@@ -35,9 +36,18 @@ SEARCH_EPOCHS    = 50
 FINAL_EPOCHS     = 200
 PATIENCE         = 10
 
+def get_input_size_from_selected_features():
+    """Load selected features file and return the number of features."""
+    with open(SELECTED_FEATURES_PATH, 'r') as f:
+        selected_features = json.load(f)
+    return len(selected_features['features'])
+
 def train_and_evaluate(hidden_size, lr, num_layers, num_epochs=SEARCH_EPOCHS):
     """Train for up to num_epochs with early stopping; return best val loss."""
-    model     = MaskedLSTMAutoencoder(input_size=43,
+    # Get dynamic input size from selected features
+    input_size = get_input_size_from_selected_features()
+    
+    model     = MaskedLSTMAutoencoder(input_size=input_size,
                                       hidden_size=hidden_size,
                                       num_layers=num_layers)
     optimizer = torch.optim.Adam(model.parameters(), lr=lr, weight_decay=1e-4)
@@ -84,7 +94,10 @@ def do_grid_search():
 
 def train_final(hidden_size, lr, num_layers):
     """Train a final model using the best hyperparams, with checkpoints & loss plotting."""
-    model     = MaskedLSTMAutoencoder(input_size=43,
+    # Get dynamic input size from selected features
+    input_size = get_input_size_from_selected_features()
+    
+    model     = MaskedLSTMAutoencoder(input_size=input_size,
                                       hidden_size=hidden_size,
                                       num_layers=num_layers)
     optimizer = torch.optim.Adam(model.parameters(), lr=lr, weight_decay=1e-4)

@@ -2,8 +2,6 @@
   "features": [
     "temp_mean",
     "temp_std",
-    "temp_min",
-    "temp_max",
     "temp_range",
     "acc_magnitude_mean",
     "acc_magnitude_std",
@@ -12,8 +10,6 @@
     "acc_activity_level",
     "eda_mean",
     "eda_std",
-    "eda_max",
-    "eda_min",
     "eda_range",
     "eda_slope",
     "num_scr_peaks",
@@ -22,8 +18,6 @@
     "mean_scr_area",
     "bvp_mean",
     "bvp_std",
-    "bvp_max",
-    "bvp_min",
     "bvp_range",
     "bvp_systolic_amp_mean",
     "bvp_systolic_amp_std",
@@ -39,8 +33,6 @@
     "hrv_pnn50",
     "hr_mean",
     "hr_std",
-    "hr_min",
-    "hr_max",
     "hr_range",
     "hr_acc_ratio"
   ]
