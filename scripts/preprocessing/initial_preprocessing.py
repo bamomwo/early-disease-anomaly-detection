@@ -785,9 +785,9 @@ def process_participant(participant_dir: str, output_dir: str,
 def main():
     parser = argparse.ArgumentParser(description='Process multimodal biosignal data')
     parser.add_argument('--participant', type=str, help='Specific participant ID to process')
-    parser.add_argument('--data-dir', type=str, default='../data/raw', 
-                       help='Path to raw data directory (default: ../data/raw)')
-    parser.add_argument('--output-dir', type=str, default='../data/processed',
+    parser.add_argument('--data-dir', type=str, default='../../data/raw', 
+                       help='Path to raw data directory (default: ../../data/raw)')
+    parser.add_argument('--output-dir', type=str, default='../../data/processed',
                        help='Output directory for processed features (default: processed_features)')
     parser.add_argument('--window-size', type=int, default=10,
                        help='Window size in seconds (default: 10)')

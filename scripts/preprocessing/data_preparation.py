@@ -77,14 +77,24 @@ def normalize_participant(file_path, participant_id):
             stats)
 
 # ---------- MAIN ----------
-def main(participant_id=None, output_dir=OUTPUT_DIR):
+def main(participant_id=None, output_dir=OUTPUT_DIR, force=False):
     # Output subdirectories
     for split in ["train", "val", "test"]:
         for kind in ["norm", "filled", "mask"]:
             os.makedirs(os.path.join(output_dir, split, kind), exist_ok=True)
     os.makedirs("stats", exist_ok=True)
 
+    # Load existing stats if available
     norm_stats = {}
+    if os.path.exists(STATS_FILE):
+        try:
+            with open(STATS_FILE, "r") as f:
+                norm_stats = json.load(f)
+            print(f"Loaded existing statistics for {len(norm_stats)} participants")
+        except (json.JSONDecodeError, FileNotFoundError) as e:
+            print(f"Warning: Could not load existing stats file: {e}")
+            norm_stats = {}
+    
     files_to_process = []
 
     if participant_id:
@@ -103,6 +113,11 @@ def main(participant_id=None, output_dir=OUTPUT_DIR):
                 files_to_process.append((filename, pid, filepath))
 
     for filename, pid, filepath in files_to_process:
+        # Check if participant has already been processed
+        if pid in norm_stats and not force:
+            print(f"Participant {pid} already processed. Skipping... (use --force to reprocess)")
+            continue
+            
         (train_norm, train_filled, train_mask,
          val_norm, val_filled, val_mask,
          test_norm, test_filled, test_mask,
@@ -128,7 +143,7 @@ def main(participant_id=None, output_dir=OUTPUT_DIR):
     with open(STATS_FILE, "w") as f:
         json.dump(norm_stats, f, indent=4)
 
-    print("Normalization complete.")
+    print(f"Normalization complete. Statistics saved for {len(norm_stats)} participants.")
 
 # Run script if executed directly
 if __name__ == "__main__":
@@ -142,5 +157,9 @@ if __name__ == "__main__":
         "-o", "--output_dir", type=str, default=OUTPUT_DIR,
         help="Parent directory to save normalized data. Default is 'data/normalized'."
     )
+    parser.add_argument(
+        "--force", action="store_true",
+        help="Force reprocessing even if participant has already been processed."
+    )
     args = parser.parse_args()
-    main(participant_id=args.participant, output_dir=args.output_dir)
+    main(participant_id=args.participant, output_dir=args.output_dir, force=args.force)
