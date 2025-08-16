@@ -19,9 +19,9 @@ from src.data.physiological_loader import PhysiologicalDataLoader
 
 # ── Constants ──
 DATA_PATH          = "data/normalized"
-PARTICIPANT        = "BG"
+PARTICIPANT        = "5C"
 DEVICE             = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-BEST_CONFIG_PATH   = f"results/tcn_config.json"
+BEST_CONFIG_PATH   = f"config/tcn_config.json"
 CHECKPOINT_DIR     = f"results/tcn_ae/pure/{PARTICIPANT}"
 FIGS_DIR           = os.path.join(CHECKPOINT_DIR, "figs")
 

@@ -19,7 +19,7 @@ from src.data.physiological_loader import PhysiologicalDataLoader
 
 # ── Constants ──
 DATA_PATH          = "data/normalized"
-PARTICIPANTS       = ["5C", "6B", "6D", "7A", "7E", "8B", "94", "BG"]
+PARTICIPANTS       = ["5C", "6B", "6D", "7A", "7E", "8B","15", "83", "94", "BG","CE","DF","E4","EG","F5"]
 DEVICE             = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 BEST_CONFIG_PATH   = f"config/tcn_config.json"
 CHECKPOINT_DIR     = f"results/tcn_ae/general"

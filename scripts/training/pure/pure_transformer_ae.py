@@ -19,7 +19,7 @@ from src.data.physiological_loader import PhysiologicalDataLoader
 
 # ── Constants ──
 DATA_PATH          = "data/normalized"
-PARTICIPANT        = "94"
+PARTICIPANT        = "BG"
 DEVICE             = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 BEST_CONFIG_PATH   = f"config/transformer_config.json"
 SELECTED_FEATURES_PATH = "config/selected_features.json"

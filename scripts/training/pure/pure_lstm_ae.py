@@ -34,7 +34,7 @@ HYPERPARAM_SPACE = {
 }
 SEARCH_EPOCHS    = 50
 FINAL_EPOCHS     = 200
-PATIENCE         = 10
+PATIENCE         = 15
 
 def get_input_size_from_selected_features():
     """Load selected features file and return the number of features."""
@@ -49,7 +49,8 @@ def train_and_evaluate(hidden_size, lr, num_layers, num_epochs=SEARCH_EPOCHS):
     
     model     = MaskedLSTMAutoencoder(input_size=input_size,
                                       hidden_size=hidden_size,
-                                      num_layers=num_layers)
+                                      num_layers=num_layers,
+                                      sequence_length=32)
     optimizer = torch.optim.Adam(model.parameters(), lr=lr, weight_decay=1e-4)
     loss_fn   = MaskedMSELoss()
 
@@ -99,7 +100,8 @@ def train_final(hidden_size, lr, num_layers):
     
     model     = MaskedLSTMAutoencoder(input_size=input_size,
                                       hidden_size=hidden_size,
-                                      num_layers=num_layers)
+                                      num_layers=num_layers,
+                                      sequence_length=32)
     optimizer = torch.optim.Adam(model.parameters(), lr=lr, weight_decay=1e-4)
     loss_fn   = MaskedMSELoss()
 

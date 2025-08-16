@@ -1,0 +1,26 @@
+{
+    "BG": {
+        "windows": "34547",
+        "no_sessions" : "25",
+        "train_seq": "2344",
+        "val_seq": "1004",
+        "test_seq": "865",
+        "loss_path": "results/lstm_ae/pure/BG/losses_BG.json"
+    },
+    "6B": {
+        "windows": "20938",
+        "no_sessions" : "28",
+        "train_seq": "1264",
+        "val_seq": "542",
+        "test_seq": "523",
+        "loss_path": "results/lstm_ae/pure/6B/losses_6B.json"
+    },
+   "6D": {
+        "windows": "8632",
+        "no_sessions" : "8632",
+        "train_seq": "9",
+        "val_seq": "577",
+        "test_seq": "247",
+        "loss_path": "results/lstm_ae/pure/6D/losses_6D.json"
+   }
+}

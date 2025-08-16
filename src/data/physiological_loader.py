@@ -242,14 +242,13 @@ class PhysiologicalDataLoader:
         
         # Default configuration
         self.default_config = {
-            'sequence_length': 10,
+            'sequence_length': 24,
             'overlap': 0.2,
             'batch_size': 32,
             'shuffle': False,
             'num_workers': 1,
             'pin_memory': False,
             'drop_last': False,
-            # point this at your JSON of "features to use"
             'selected_features_path': 'config/selected_features.json'
         }
         

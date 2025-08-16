@@ -16,7 +16,7 @@ from src.utils.losses import MaskedMSELoss
 from src.utils.train_utils import evaluate, extract_latents
 from src.data.physiological_loader import PhysiologicalDataLoader
 from src.utils.helpers import (
-    get_sequence_labels,
+    get_sequence_labels_combined,
     plot_latent_space_viz,
     plot_recon_error_distribution,
     plot_roc_pr_curves,
@@ -134,10 +134,10 @@ def main():
     errors = diff.sum(axis=(1,2)) / masks.sum(axis=(1,2))
     
     if args.model_type == "personalized":
-        labels = get_sequence_labels(test_loader, args.participant, split="test")
+        labels = get_sequence_labels_combined(test_loader, args.participant, split="test")
     else:
         # For general models, get labels for all participants
-        labels = get_sequence_labels(test_loader, participants_to_evaluate, split="test")
+        labels = get_sequence_labels_combined(test_loader, participants_to_evaluate, split="test")
 
     # drop any inf or nan just in case
     valid   = np.isfinite(errors)

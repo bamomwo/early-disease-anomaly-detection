@@ -1,115 +1,172 @@
-import torch
-import os
+#!/usr/bin/env python
 import sys
+import os
 import json
+import argparse
+
+import torch
 import matplotlib.pyplot as plt
 
-# Add project root to path
+# ── Project setup ──
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '../../..')))
 
+from src.utils.helpers import plot_loss_curves
 from src.models.transformer_ae import TransformerAutoencoder
 from src.utils.losses import MaskedMSELoss
 from src.utils.train_utils import train_one_epoch, validate
 from src.data.physiological_loader import PhysiologicalDataLoader
 
+# ── Constants ──
+DATA_PATH = "data/normalized"
+DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+BEST_CONFIG_PATH = "config/transformer_config.json"
+SELECTED_FEATURES_PATH = "config/selected_features.json"
+GENERAL_PRETRAINED_PATH = "results/transformer_ae/general/best_model.pth"
+PERSONALIZED_DIR = "results/transformer_ae/personalized"
 
-def main():
-    # ------------------- CONFIG ------------------- #
-    participant = "BG"  # replace with desired participant
-    pretrained_path = "results/transformer_ae/general/best_model.pth"
-    save_dir = f"results/transformer_ae/personalized/{participant}"
-    os.makedirs(save_dir, exist_ok=True)
+DEFAULT_EPOCHS = 30
+DEFAULT_PATIENCE = 5
 
-    # ------------------- MODEL PARAMS ..............#
-    input_size = 43
-    model_dim = 128
-    num_heads = 4
-    num_layers = 2
-    dropout = 0.1
 
-    learning_rate = 1e-4  # smaller LR for fine-tuning
-    num_epochs = 30
-    patience = 5
+def get_input_size_from_selected_features():
+    with open(SELECTED_FEATURES_PATH, 'r') as f:
+        selected_features = json.load(f)
+    return len(selected_features['features'])
 
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-    # ------------------- LOAD MODEL ------------------- #
-    model = TransformerAutoencoder(
+def build_model(config):
+    input_size = get_input_size_from_selected_features()
+    return TransformerAutoencoder(
         input_size=input_size,
-        model_dim=model_dim,
-        nhead=num_heads,
-        num_layers=num_layers,
-        dropout=dropout
+        model_dim=config["model_dim"],
+        num_layers=config["num_layers"],
+        nhead=config["nhead"],
+        dropout=config["dropout"],
     )
 
-    checkpoint = torch.load(pretrained_path)
-    model.load_state_dict(checkpoint['model_state_dict'])
-    model.to(device)
 
-    # Optionally freeze encoder
-    # for param in model.encoder.parameters():
-    #     param.requires_grad = False
+def fine_tune_participant(participant, lr=None, epochs=DEFAULT_EPOCHS, patience=DEFAULT_PATIENCE, pretrained_path=GENERAL_PRETRAINED_PATH, freeze_encoder=False):
+    # Load best hyperparameters
+    if not os.path.exists(BEST_CONFIG_PATH):
+        raise FileNotFoundError(
+            f"No cached config found at {BEST_CONFIG_PATH}. Run general or pure search first."
+        )
+    with open(BEST_CONFIG_PATH) as f:
+        cfg = json.load(f)
 
-    # ------------------- PREPARE DATA ------------------- #
-    loader_factory = PhysiologicalDataLoader("data")
+    # Learning rate override or use config
+    effective_lr = lr if lr is not None else cfg.get("lr", 1e-4)
+
+    # Directories
+    save_dir = os.path.join(PERSONALIZED_DIR, participant)
+    figs_dir = os.path.join(save_dir, "figs")
+    os.makedirs(save_dir, exist_ok=True)
+    os.makedirs(figs_dir, exist_ok=True)
+
+    # Build model and load pretrained weights
+    model = build_model(cfg)
+    if os.path.exists(pretrained_path):
+        ckpt = torch.load(pretrained_path)
+        # Support either full checkpoint or state_dict
+        state_dict = ckpt.get('model_state_dict', ckpt)
+        model.load_state_dict(state_dict)
+    else:
+        print(f"[WARN] Pretrained checkpoint not found at {pretrained_path}. Training from scratch for this participant.")
+
+    if freeze_encoder:
+        for param in getattr(model, 'encoder', model).parameters():
+            param.requires_grad = False
+
+    model.to(DEVICE)
+
+    # Data
+    loader_factory = PhysiologicalDataLoader(DATA_PATH, config={'num_workers': 1})
     train_loader, val_loader, _ = loader_factory.create_personalized_loaders(participant)
 
     loss_fn = MaskedMSELoss()
-    optimizer = torch.optim.Adam(
-        filter(lambda p: p.requires_grad, model.parameters()), 
-        lr=learning_rate,
-        weight_decay=0.0001
-    )
+    optimizer = torch.optim.Adam(filter(lambda p: p.requires_grad, model.parameters()), lr=effective_lr)
 
-    # ------------------- FINE-TUNING LOOP ------------------- #
-    best_val_loss = float('inf')
-    patience_counter = 0
+    # Resume support
+    resume_path = os.path.join(save_dir, "best_model.pth")
+    losses_path = os.path.join(save_dir, f"losses_{participant}.json")
+
+    start_epoch = 0
     train_losses = []
     val_losses = []
+    best_val_loss = float('inf')
+    patience_counter = 0
 
+    if os.path.exists(resume_path):
+        ckpt = torch.load(resume_path)
+        model.load_state_dict(ckpt['model_state_dict'])
+        optimizer.load_state_dict(ckpt['optimizer_state_dict'])
+        best_val_loss = ckpt.get('best_val_loss', ckpt.get('val_loss', float('inf')))
+        patience_counter = ckpt.get('patience_counter', 0)
+        start_epoch = ckpt.get('epoch', -1) + 1
 
-    for epoch in range(num_epochs):
-        train_loss = train_one_epoch(model, train_loader, optimizer, device, loss_fn)
-        val_loss = validate(model, val_loader, device, loss_fn)
+        if os.path.exists(losses_path):
+            with open(losses_path) as f:
+                log = json.load(f)
+                train_losses = log.get("train_losses", [])
+                val_losses = log.get("val_losses", [])
+        print(f"[TRAIN] Resumed from epoch {start_epoch}")
 
+    # Training loop
+    for epoch in range(start_epoch, epochs):
+        t_loss = train_one_epoch(model, train_loader, optimizer, DEVICE, loss_fn)
+        v_loss = validate(model, val_loader, DEVICE, loss_fn)
 
-        train_losses.append(train_loss)
-        val_losses.append(val_loss)
+        train_losses.append(t_loss)
+        val_losses.append(v_loss)
 
-
-        if val_loss < best_val_loss:
-            best_val_loss = val_loss
+        if v_loss < best_val_loss:
+            best_val_loss = v_loss
             patience_counter = 0
             torch.save({
                 'epoch': epoch,
                 'model_state_dict': model.state_dict(),
                 'optimizer_state_dict': optimizer.state_dict(),
-                'val_loss': best_val_loss
-            }, os.path.join(save_dir, "best_model.pth"))
-            print(f"Epoch {epoch+1}: New best model saved. Val Loss: {val_loss:.4f}")
+                'best_val_loss': best_val_loss,
+                'patience_counter': patience_counter
+            }, resume_path)
         else:
             patience_counter += 1
-            print(f"Epoch {epoch+1}: No improvement. Val Loss: {val_loss:.4f}")
             if patience_counter >= patience:
-                print("Early stopping triggered.")
+                print(f"[TRAIN] Early stopping at epoch {epoch+1}")
                 break
 
-     # Saving the losses
-    loss_log = {
-        "train_losses": train_losses,
-        "val_losses": val_losses
-    }
-    with open(os.path.join(save_dir, f"losses.json"), "w") as f:
-        json.dump(loss_log, f)
+        print(f"[TRAIN] Epoch {epoch+1}/{epochs}  train={t_loss:.4f}  val={v_loss:.4f}")
+
+    # Persist losses and final model
+    with open(losses_path, "w") as f:
+        json.dump({"train_losses": train_losses, "val_losses": val_losses}, f)
+
+    final_model_path = os.path.join(save_dir, f"final_model_{participant}.pth")
+    torch.save(model.state_dict(), final_model_path)
+
+    # Plot losses with shared helper
+    plot_loss_curves(train_losses, val_losses, cfg["model_dim"], cfg["num_layers"], figs_dir)
 
 
-    # Plotting the losses
-    plt.figure(figsize=(10, 5))
-    plt.plot(train_losses, label='Train Loss')
-    plt.plot(val_losses, label='Val Loss')
-    plt.legend()
-    plt.savefig(f'results/transformer_ae/personalized/{participant}/losses.png')
-    plt.close()
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--participant", type=str, default="BG", help="Participant ID to fine-tune on")
+    parser.add_argument("--epochs", type=int, default=DEFAULT_EPOCHS, help="Number of fine-tuning epochs")
+    parser.add_argument("--patience", type=int, default=DEFAULT_PATIENCE, help="Early stopping patience")
+    parser.add_argument("--lr", type=float, default=0.0001, help="Learning rate override for fine-tuning")
+    parser.add_argument("--pretrained", type=str, default=GENERAL_PRETRAINED_PATH, help="Path to pretrained general checkpoint")
+    parser.add_argument("--freeze-encoder", action="store_true", help="Freeze encoder layers during fine-tuning")
+    args = parser.parse_args()
+
+    fine_tune_participant(
+        participant=args.participant,
+        lr=args.lr,
+        epochs=args.epochs,
+        patience=args.patience,
+        pretrained_path=args.pretrained,
+        freeze_encoder=args.freeze_encoder,
+    )
+
 
 if __name__ == "__main__":
     main()
