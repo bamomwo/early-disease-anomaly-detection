@@ -17,6 +17,7 @@ from src.utils.train_utils import evaluate, extract_latents
 from src.data.physiological_loader import PhysiologicalDataLoader
 from src.utils.helpers import (
     get_sequence_labels,
+    get_optimal_threshold,
     plot_latent_space_viz,
     plot_recon_error_distribution,
     plot_roc_pr_curves,
@@ -35,10 +36,10 @@ def get_input_size_from_selected_features():
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--model-type", choices=["personalized", "general"], 
-                        default="personalized", help="Type of model to evaluate")
+    parser.add_argument("--model-type", choices=["pure", "personalized", "general"], 
+                        default="pure", help="Type of model to evaluate")
     parser.add_argument("--participant", default=None,
-                        help="Single participant ID (required for personalized models)")
+                        help="Single participant ID (required for pure and personalized models)")
     parser.add_argument("--participants", nargs='+', default=None,
                         help="List of participant IDs (required for general models)")
     parser.add_argument("--model-path", default=None,
@@ -53,11 +54,11 @@ def main():
     args = parser.parse_args()
 
     # Validate arguments based on model type
-    if args.model_type == "personalized":
+    if args.model_type in ["pure", "personalized"]:
         if args.participant is None:
-            parser.error("--participant is required for personalized models")
+            parser.error(f"--participant is required for {args.model_type} models")
         if args.participants is not None:
-            print("Warning: --participants ignored for personalized models")
+            print(f"Warning: --participants ignored for {args.model_type} models")
     else:  # general
         if args.participants is None:
             parser.error("--participants is required for general models")
@@ -66,16 +67,20 @@ def main():
 
     # Resolve defaults based on model type and participant(s)
     if args.model_path is None:
-        if args.model_type == "personalized":
+        if args.model_type == "pure":
             args.model_path = f"results/transformer_ae/pure/{args.participant}/final_model_{args.participant}.pth"
+        elif args.model_type == "personalized":
+            args.model_path = f"results/transformer_ae/personalized/{args.participant}/best_model.pth"
         else:  # general
             if args.model_dir is None:
                 args.model_dir = "results/transformer_ae/general"
             args.model_path = f"{args.model_dir}/final_model.pth"
     
     if args.figs_dir is None:
-        if args.model_type == "personalized":
+        if args.model_type == "pure":
             args.figs_dir = f"results/transformer_ae/pure/{args.participant}/figs"
+        elif args.model_type == "personalized":
+            args.figs_dir = f"results/transformer_ae/personalized/{args.participant}/figs"
         else:  # general
             if args.model_dir is None:
                 args.model_dir = "results/transformer_ae/general"
@@ -118,72 +123,85 @@ def main():
     model.to(device)
     model.eval()
 
-    # ── 2. Prepare test data ──
+    # ── 2. Prepare loaders ──
     loader_factory = PhysiologicalDataLoader(args.data_path)
     
-    if args.model_type == "personalized":
-        # Personalized model evaluation
-        _, _, test_loader = loader_factory.create_personalized_loaders(args.participant)
+    if args.model_type in ["pure", "personalized"]:
+        _, val_loader, test_loader = loader_factory.create_personalized_loaders(
+            args.participant,
+            filter_stress_val=False, # mixed data for thresholding
+            filter_stress_test=False # mixed data for testing
+        )
         participants_to_evaluate = [args.participant]
     else:
-        # General model evaluation
-        _, _, test_loader = loader_factory.create_general_loaders(args.participants)
+        _, val_loader, test_loader = loader_factory.create_general_loaders(
+            args.participants,
+            filter_stress_val=False, # mixed data for thresholding
+            filter_stress_test=False # mixed data for testing
+        )
         participants_to_evaluate = args.participants
 
-    # ── 3. Run evaluation to get reconstructions ──
     loss_fn = MaskedMSELoss()
-    avg_loss, all_inputs, all_outputs, all_masks = evaluate(model, test_loader, device, loss_fn)
 
-    # 4. Concatenate everything once
-    inputs  = np.concatenate(all_inputs,  axis=0)
-    outputs = np.concatenate(all_outputs, axis=0)
-    masks   = np.concatenate(all_masks,   axis=0)
-
-    # masked‐MSE per sequence
-    diff   = (inputs - outputs)**2 * masks
-    errors = diff.sum(axis=(1,2)) / masks.sum(axis=(1,2))
+    # ── 3. Evaluate on Validation Set to find threshold ──
+    print("Evaluating on validation set to find optimal threshold...")
+    _, val_inputs, val_outputs, val_masks = evaluate(model, val_loader, device, loss_fn)
+    val_inputs  = np.concatenate(val_inputs,  axis=0)
+    val_outputs = np.concatenate(val_outputs, axis=0)
+    val_masks   = np.concatenate(val_masks,   axis=0)
+    val_diff   = (val_inputs - val_outputs)**2 * val_masks
+    val_errors = val_diff.sum(axis=(1,2)) / val_masks.sum(axis=(1,2))
+    val_labels = get_sequence_labels(val_loader, participants_to_evaluate, split="val")
     
-    if args.model_type == "personalized":
-        labels = get_sequence_labels(test_loader, args.participant, split="test")
-    else:
-        # For general models, get labels for all participants
-        labels = get_sequence_labels(test_loader, participants_to_evaluate, split="test")
+    valid_val = np.isfinite(val_errors)
+    val_errors = val_errors[valid_val]
+    val_labels = val_labels[valid_val]
 
-    # drop any inf or nan just in case
-    valid   = np.isfinite(errors)
-    errors  = errors[valid]
-    labels  = labels[valid]  # make sure labels was defined just above
+    best_threshold = get_optimal_threshold(val_labels, val_errors)
+    print(f"Optimal threshold found: {best_threshold:.4f}")
 
-    # 5. Latent Space Visualization
+    # ── 4. Evaluate on Test Set ──
+    print("Evaluating on test set...")
+    _, test_inputs, test_outputs, test_masks = evaluate(model, test_loader, device, loss_fn)
+    test_inputs  = np.concatenate(test_inputs,  axis=0)
+    test_outputs = np.concatenate(test_outputs, axis=0)
+    test_masks   = np.concatenate(test_masks,   axis=0)
+    test_diff   = (test_inputs - test_outputs)**2 * test_masks
+    test_errors = test_diff.sum(axis=(1,2)) / test_masks.sum(axis=(1,2))
+    test_labels = get_sequence_labels(test_loader, participants_to_evaluate, split="test")
+
+    valid_test = np.isfinite(test_errors)
+    test_errors = test_errors[valid_test]
+    test_labels = test_labels[valid_test]
+
+    # ── 5. Latent Space Visualization on Test Set ──
     latents = extract_latents(model, test_loader, device)
+    latents = latents[valid_test]
 
-    # now filter latents based on valid indices
-    latents = latents[valid]
-
-    # ── 5. Generate evaluation figures ──
-    # 5.1 Reconstruction Error Distribution
+    # ── 6. Generate evaluation figures using the threshold from validation ──
+    # 6.1 Reconstruction Error Distribution
     plot_recon_error_distribution(
-        labels, errors, out_dir=args.figs_dir
+        test_labels, test_errors, out_dir=args.figs_dir
     )
 
-    # 5.2 ROC & Precision-Recall Curves
+    # 6.2 ROC & Precision-Recall Curves
     plot_roc_pr_curves(
-        labels, errors, out_dir=args.figs_dir
+        test_labels, test_errors, out_dir=args.figs_dir
     )
 
-    # 5.3 Confusion Matrix
+    # 6.3 Confusion Matrix
     plot_confusion_matrix(
-        labels, errors, out_dir=args.figs_dir
+        test_labels, test_errors, out_dir=args.figs_dir, threshold=best_threshold
     )
 
-    # 5.4 Example Time-Series Reconstructions
+    # 6.4 Example Time-Series Reconstructions
     plot_time_series_reconstructions(
-        inputs, outputs, labels, out_dir=args.figs_dir
+        test_inputs, test_outputs, test_labels, out_dir=args.figs_dir
     )
 
-    #5.5 Latent-Space Visualization
+    # 6.5 Latent-Space Visualization
     plot_latent_space_viz(
-        latents, labels, out_dir=args.figs_dir
+        latents, test_labels, out_dir=args.figs_dir
     )
 
     print(f"All evaluation figures saved to {args.figs_dir}")

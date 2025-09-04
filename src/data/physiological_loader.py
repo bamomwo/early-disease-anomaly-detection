@@ -28,12 +28,13 @@ class PhysiologicalDataset(Dataset):
         self,
         data_path: str,
         participants: List[str],
-        sequence_length: int = 10,
-        overlap: float = 0.5,
+        sequence_length: int = 24,
+        overlap: float = 0.2,
         data_type: str = 'train',
         normalize: bool = True,
         return_participant_id: bool = True,
-        selected_features_path: Optional[str] = None
+        selected_features_path: Optional[str] = None,
+        filter_stress: bool = False
     ):
         """
         Initialize the dataset.
@@ -46,6 +47,7 @@ class PhysiologicalDataset(Dataset):
             data_type: 'train' or 'test'
             normalize: Whether to apply normalization
             return_participant_id: Whether to return participant ID with each sample
+            filter_stress: If True, only load stress-free (level 0) data.
         """
         self.data_path = Path(data_path)
         self.participants = participants
@@ -54,6 +56,7 @@ class PhysiologicalDataset(Dataset):
         self.data_type = data_type
         self.normalize = normalize
         self.return_participant_id = return_participant_id
+        self.filter_stress = filter_stress
         # ── load your JSON list of "features we actually want" ──
         if selected_features_path:
             with open(selected_features_path, 'r') as f:
@@ -100,6 +103,16 @@ class PhysiologicalDataset(Dataset):
 
             # Load filled data (NaNs replaced with zeros)
             filled_data_ = pd.read_csv(filled_path)
+
+            # Load mask data (now as CSV for each split)
+            mask_data_ = pd.read_csv(mask_path)
+
+            # Filter for stress-free samples if required
+            if self.filter_stress:
+                stress_free_indices = filled_data_[filled_data_['stress_level'] == 0].index
+                filled_data_ = filled_data_.loc[stress_free_indices].reset_index(drop=True)
+                mask_data_ = mask_data_.loc[stress_free_indices].reset_index(drop=True)
+
             # Drop non-feature columns
             to_drop = [c for c in ('session','timestamp','stress_level') if c in filled_data_.columns]
             filled_data_ = filled_data_.drop(columns=to_drop)
@@ -112,9 +125,7 @@ class PhysiologicalDataset(Dataset):
                 filled_data_ = filled_data_[self.selected_features]
             filled_data = filled_data_
 
-            # Load mask data (now as CSV for each split)
-            mask_data_ = pd.read_csv(mask_path)
-            # Drop the same non-feature columns
+            # Drop the same non-feature columns from the already-filtered mask
             mask_data_ = mask_data_.drop(columns=to_drop, errors='ignore')
 
             # ── subset mask to the same selected features ──
@@ -125,8 +136,10 @@ class PhysiologicalDataset(Dataset):
 
             # Ensure mask and data have same shape
             if filled_data.shape != mask_data.shape:
-                logger.warning(f"Shape mismatch for participant {participant}: "
-                               f"data {filled_data.shape}, mask {mask_data.shape}")
+                logger.warning(
+                    f"Shape mismatch for participant {participant}: "
+                    f"data {filled_data.shape}, mask {mask_data.shape}"
+                )
                 return
 
             # Convert to numpy arrays
@@ -242,7 +255,7 @@ class PhysiologicalDataLoader:
         
         # Default configuration
         self.default_config = {
-            'sequence_length': 10,
+            'sequence_length': 24,
             'overlap': 0.2,
             'batch_size': 32,
             'shuffle': False,
@@ -260,6 +273,7 @@ class PhysiologicalDataLoader:
         self,
         participants: List[str],
         data_type: str = 'train',
+        filter_stress: bool = False,
         **kwargs
     ) -> DataLoader:
         """
@@ -268,6 +282,7 @@ class PhysiologicalDataLoader:
         Args:
             participants: List of participant IDs
             data_type: 'train', 'val', or 'test'
+            filter_stress: If True, only load stress-free (level 0) data.
             **kwargs: Additional arguments to override default config
             
         Returns:
@@ -283,6 +298,7 @@ class PhysiologicalDataLoader:
             sequence_length=config['sequence_length'],
             overlap=config['overlap'],
             data_type=data_type,
+            filter_stress=filter_stress, # Pass the flag here
             # hand off your feature‐list here:
             selected_features_path=config.get('selected_features_path')
         )
@@ -302,6 +318,9 @@ class PhysiologicalDataLoader:
     def create_personalized_loaders(
         self,
         participant: str,
+        filter_stress_train: bool = False,
+        filter_stress_val: bool = False,
+        filter_stress_test: bool = False,
         **kwargs
     ) -> Tuple[DataLoader, DataLoader, DataLoader]:
         """
@@ -309,6 +328,9 @@ class PhysiologicalDataLoader:
         
         Args:
             participant: Participant ID
+            filter_stress_train: Whether to filter stress for the training set.
+            filter_stress_val: Whether to filter stress for the validation set.
+            filter_stress_test: Whether to filter stress for the test set.
             **kwargs: Additional configuration
             
         Returns:
@@ -317,18 +339,21 @@ class PhysiologicalDataLoader:
         train_loader = self.create_dataloader(
             participants=[participant],
             data_type='train',
+            filter_stress=filter_stress_train,
             **kwargs
         )
         val_loader = self.create_dataloader(
             participants=[participant],
             data_type='val',
             shuffle=False,  # Never shuffle val data
+            filter_stress=filter_stress_val,
             **kwargs
         )
         test_loader = self.create_dataloader(
             participants=[participant],
             data_type='test',
             shuffle=False,  # Never shuffle test data
+            filter_stress=filter_stress_test,
             **kwargs
         )
         return train_loader, val_loader, test_loader
@@ -336,6 +361,9 @@ class PhysiologicalDataLoader:
     def create_general_loaders(
         self,
         participants: List[str],
+        filter_stress_train: bool = False,
+        filter_stress_val: bool = False,
+        filter_stress_test: bool = False,
         **kwargs
     ) -> Tuple[DataLoader, DataLoader, DataLoader]:
         """
@@ -343,6 +371,9 @@ class PhysiologicalDataLoader:
         
         Args:
             participants: List of participant IDs
+            filter_stress_train: Whether to filter stress for the training set.
+            filter_stress_val: Whether to filter stress for the validation set.
+            filter_stress_test: Whether to filter stress for the test set.
             **kwargs: Additional configuration
             
         Returns:
@@ -351,18 +382,21 @@ class PhysiologicalDataLoader:
         train_loader = self.create_dataloader(
             participants=participants,
             data_type='train',
+            filter_stress=filter_stress_train,
             **kwargs
         )
         val_loader = self.create_dataloader(
             participants=participants,
             data_type='val',
             shuffle=False,  # Never shuffle val data
+            filter_stress=filter_stress_val,
             **kwargs
         )
         test_loader = self.create_dataloader(
             participants=participants,
             data_type='test',
             shuffle=False,  # Never shuffle test data
+            filter_stress=filter_stress_test,
             **kwargs
         )
         # Log summary of loaded sequences

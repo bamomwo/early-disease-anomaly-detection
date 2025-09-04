@@ -21,7 +21,7 @@ from src.data.physiological_loader import PhysiologicalDataLoader
 DATA_PATH          = "data/normalized"
 PARTICIPANT        = "BG"
 DEVICE             = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-BEST_CONFIG_PATH   = f"results/tcn_config.json"
+BEST_CONFIG_PATH   = f"config/tcn_config.json"
 CHECKPOINT_DIR     = f"results/tcn_ae/pure/{PARTICIPANT}"
 FIGS_DIR           = os.path.join(CHECKPOINT_DIR, "figs")
 
@@ -45,7 +45,11 @@ def train_and_evaluate(latent_size, lr, num_levels, kernel_size, num_epochs=SEAR
     loss_fn   = MaskedMSELoss()
 
     loader    = PhysiologicalDataLoader(DATA_PATH)
-    train_loader, val_loader, _ = loader.create_personalized_loaders(PARTICIPANT)
+    train_loader, val_loader, _ = loader.create_personalized_loaders(
+        PARTICIPANT,
+        filter_stress_train=True,
+        filter_stress_val=True
+    )
     model.to(DEVICE)
 
     best_val = float('inf')
@@ -92,7 +96,11 @@ def train_final(latent_size, lr, num_levels, kernel_size):
     loss_fn   = MaskedMSELoss()
 
     loader    = PhysiologicalDataLoader(DATA_PATH)
-    train_loader, val_loader, _ = loader.create_personalized_loaders(PARTICIPANT)
+    train_loader, val_loader, _ = loader.create_personalized_loaders(
+        PARTICIPANT,
+        filter_stress_train=True,
+        filter_stress_val=True
+    )
     model.to(DEVICE)
 
     os.makedirs(FIGS_DIR, exist_ok=True)

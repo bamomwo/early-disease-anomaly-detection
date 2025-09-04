@@ -52,7 +52,11 @@ def main():
 
     # ------------------- PREPARE DATA ------------------- #
     loader_factory = PhysiologicalDataLoader("data")
-    train_loader, val_loader, _ = loader_factory.create_personalized_loaders(participant)
+    train_loader, val_loader, _ = loader_factory.create_personalized_loaders(
+        participant,
+        filter_stress_train=True,
+        filter_stress_val=True
+    )
 
     loss_fn = MaskedMSELoss()
     optimizer = torch.optim.Adam(

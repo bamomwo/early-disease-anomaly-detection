@@ -12,8 +12,12 @@ class Chomp1d(nn.Module):
         return x[:, :, :-self.chomp_size] if self.chomp_size > 0 else x
 
 class TemporalBlock(nn.Module):
-    def __init__(self, in_channels, out_channels, kernel_size, stride, dilation, padding, dropout):
+    def __init__(self, in_channels, out_channels, kernel_size, stride, dilation, dropout):
         super().__init__()
+        # Calculate causal padding: (kernel_size - 1) * dilation
+        # This ensures we only look at past and present, not future
+        padding = (kernel_size - 1) * dilation
+        
         self.conv1 = nn.Conv1d(in_channels, out_channels, kernel_size,
                                stride=stride, padding=padding, dilation=dilation)
         self.chomp1 = Chomp1d(padding)
@@ -59,8 +63,7 @@ class TemporalConvNet(nn.Module):
             in_channels = num_inputs if i == 0 else num_channels[i-1]
             out_channels = num_channels[i]
             layers += [TemporalBlock(in_channels, out_channels, kernel_size, stride=1,
-                                     dilation=dilation_size, padding=(kernel_size-1)*dilation_size,
-                                     dropout=dropout)]
+                                     dilation=dilation_size, dropout=dropout)]
         self.network = nn.Sequential(*layers)
 
     def forward(self, x):
@@ -69,6 +72,10 @@ class TemporalConvNet(nn.Module):
 class TCNAutoencoder(nn.Module):
     def __init__(self, input_size, latent_size=64, num_levels=3, kernel_size=3, dropout=0.2):
         super().__init__()
+        self.input_size = input_size
+        self.latent_size = latent_size
+        self.kernel_size = kernel_size
+        
         # Encoder
         self.encoder = TemporalConvNet(
             num_inputs=input_size,
@@ -77,16 +84,36 @@ class TCNAutoencoder(nn.Module):
             dropout=dropout
         )
 
-        # Decoder (transpose convs or mirror TCN)
-        self.decoder = nn.Sequential(
-            nn.ConvTranspose1d(latent_size, input_size, kernel_size=kernel_size, padding=1)
+        # Decoder: Use a symmetric TCN structure
+        # Reverse the channel progression for the decoder
+        decoder_channels = [latent_size] * num_levels
+        decoder_channels.reverse()  # Reverse to go from latent_size back to input_size
+        
+        self.decoder = TemporalConvNet(
+            num_inputs=latent_size,
+            num_channels=decoder_channels + [input_size],
+            kernel_size=kernel_size,
+            dropout=dropout
         )
 
     def forward(self, x):
         # x shape: (batch, seq_len, input_size)
+        batch_size, seq_len, input_size = x.shape
         x = x.permute(0, 2, 1)  # (batch, input_size, seq_len)
-        encoded = self.encoder(x)  # (batch, latent_size, seq_len)
-        decoded = self.decoder(encoded)  # (batch, input_size, seq_len)
+        
+        encoded = self.encoder(x)  # (batch, latent_size, encoded_seq_len)
+        decoded = self.decoder(encoded)  # (batch, input_size, decoded_seq_len)
+        
+        # Ensure output has the same sequence length as input
+        if decoded.shape[2] != seq_len:
+            # If decoded sequence is longer, truncate to match input length
+            if decoded.shape[2] > seq_len:
+                decoded = decoded[:, :, :seq_len]
+            # If decoded sequence is shorter, pad with zeros
+            else:
+                padding = seq_len - decoded.shape[2]
+                decoded = torch.nn.functional.pad(decoded, (0, padding))
+        
         return decoded.permute(0, 2, 1)  # (batch, seq_len, input_size)
 
     def get_latent_representation(self, x):

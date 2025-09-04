@@ -274,8 +274,34 @@ def plot_roc_pr_curves(labels, errors, out_dir):
     plt.savefig(os.path.join(out_dir, 'pr_curve.png'), dpi=300)
     plt.close()
 
+def get_optimal_threshold(labels, errors):
+    """
+    Compute best-threshold via F1 score.
+
+    Args:
+        labels (np.ndarray): 1D binary array of true labels (0 or 1).
+        errors (np.ndarray): 1D array of reconstruction errors.
+    
+    Returns:
+        float: The optimal threshold.
+    """
+    precision, recall, thresholds = precision_recall_curve(labels, errors)
+    # handle precision/recall/thresholds length mismatch
+    if len(thresholds) == len(precision) - 1:
+        thresholds = np.append(thresholds, thresholds[-1]) # repeat last threshold
+    
+    # Calculate F1 score for each threshold
+    f1_scores = 2 * (precision * recall) / (precision + recall)
+    f1_scores = np.nan_to_num(f1_scores) # handle division by zero
+    
+    # Get the threshold that maximizes the F1 score
+    best_threshold_idx = np.argmax(f1_scores)
+    best_thresh = thresholds[best_threshold_idx]
+    
+    return best_thresh
+
 # Confuction Matrix with F1-Score
-def plot_confusion_matrix(labels, errors, out_dir):
+def plot_confusion_matrix(labels, errors, out_dir, threshold=None):
     """
     Compute best-threshold via F1, plot and save confusion matrix at that threshold.
 
@@ -283,25 +309,18 @@ def plot_confusion_matrix(labels, errors, out_dir):
         labels (np.ndarray): 1D binary array of true labels (0 or 1).
         errors (np.ndarray): 1D array of reconstruction errors.
         out_dir (str): Directory where figures will be saved.
+        threshold (float, optional): If provided, use this threshold. 
+                                     Otherwise, calculate the best threshold.
     """
-    # Determine best threshold by maximizing F1
-    thresholds = np.unique(errors)
-    best_f1 = 0
-    best_thresh = thresholds[0]
-    best_prec = best_rec = 0
-    for thr in thresholds:
-        preds = (errors > thr).astype(int)
-        prec, rec, f1, _ = precision_recall_fscore_support(
-            labels, preds, average='binary', zero_division=0)
-        if f1 > best_f1:
-            best_f1 = f1
-            best_thresh = thr
-            best_prec = prec
-            best_rec = rec
+    if threshold is None:
+        threshold = get_optimal_threshold(labels, errors)
 
     # Compute confusion matrix at best threshold
-    preds = (errors > best_thresh).astype(int)
+    preds = (errors > threshold).astype(int)
     cm = confusion_matrix(labels, preds)
+    
+    prec, rec, f1, _ = precision_recall_fscore_support(
+        labels, preds, average='binary', zero_division=0)
 
     plt.figure(figsize=(5, 5))
     sns.heatmap(cm, annot=True, fmt='d', cbar=False, cmap='Blues',
@@ -309,7 +328,7 @@ def plot_confusion_matrix(labels, errors, out_dir):
                 yticklabels=['Normal', 'Anomalous'])
     plt.xlabel('Predicted')
     plt.ylabel('True')
-    plt.title(f'Confusion Matrix (thr={best_thresh:.2f}, F1={best_f1:.2f})')
+    plt.title(f'Confusion Matrix (thr={threshold:.2f}, F1={f1:.2f})')
     plt.tight_layout()
     os.makedirs(out_dir, exist_ok=True)
     plt.savefig(os.path.join(out_dir, 'confusion_matrix.pdf'))

@@ -35,12 +35,12 @@ def normalize_participant(file_path, participant_id):
     df_A = df.iloc[:a_end].copy()
     df_B = df.iloc[a_end:].copy()  # test set (all stress levels)
 
-    # In A, filter for stress-free samples
-    df_A_stressfree = df_A[df_A[STRESS_COLUMN] == 0].copy()
-    n_A = len(df_A_stressfree)
+    # The data is no longer filtered for stress levels here.
+    # That logic is moved to the PhysiologicalDataLoader.
+    n_A = len(df_A)
     train_end = int(n_A * TRAIN_RATIO_WITHIN_A)
-    train_df = df_A_stressfree.iloc[:train_end].reset_index(drop=True)
-    val_df = df_A_stressfree.iloc[train_end:].reset_index(drop=True)
+    train_df = df_A.iloc[:train_end].reset_index(drop=True)
+    val_df = df_A.iloc[train_end:].reset_index(drop=True)
     test_df = df_B.reset_index(drop=True)  # test set: all samples in B
 
     # Compute mean and std from train only

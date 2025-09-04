@@ -61,7 +61,11 @@ def train_and_evaluate(model_dim, lr, num_layers, nhead, dropout, num_epochs=SEA
     loss_fn   = MaskedMSELoss()
 
     loader    = PhysiologicalDataLoader(DATA_PATH, config={'num_workers':1})
-    train_loader, val_loader, _ = loader.create_personalized_loaders(PARTICIPANT)
+    train_loader, val_loader, _ = loader.create_personalized_loaders(
+        PARTICIPANT,
+        filter_stress_train=True,
+        filter_stress_val=True
+    )
     model.to(DEVICE)
 
     best_val = float('inf')
@@ -115,7 +119,11 @@ def train_final(model_dim, lr, num_layers, nhead, dropout):
     loss_fn   = MaskedMSELoss()
 
     loader    = PhysiologicalDataLoader(DATA_PATH, config={'num_workers':1})
-    train_loader, val_loader, _ = loader.create_personalized_loaders(PARTICIPANT)
+    train_loader, val_loader, _ = loader.create_personalized_loaders(
+        PARTICIPANT,
+        filter_stress_train=True,
+        filter_stress_val=True
+    )
     model.to(DEVICE)
 
     os.makedirs(FIGS_DIR, exist_ok=True)

@@ -48,7 +48,11 @@ def train_and_evaluate(latent_size, lr, num_levels, kernel_size, num_epochs=SEAR
     loss_fn   = MaskedMSELoss()
 
     loader    = PhysiologicalDataLoader(DATA_PATH)
-    train_loader, val_loader, _ = loader.create_general_loaders(PARTICIPANTS)
+    train_loader, val_loader, _ = loader.create_general_loaders(
+        PARTICIPANTS,
+        filter_stress_train=True,
+        filter_stress_val=True
+    )
     model.to(DEVICE)
 
     best_val = float('inf')
@@ -99,7 +103,11 @@ def train_final(latent_size, lr, num_levels, kernel_size):
     loss_fn   = MaskedMSELoss()
 
     loader    = PhysiologicalDataLoader(DATA_PATH)
-    train_loader, val_loader, _ = loader.create_general_loaders(PARTICIPANTS)
+    train_loader, val_loader, _ = loader.create_general_loaders(
+        PARTICIPANTS,
+        filter_stress_train=True,
+        filter_stress_val=True
+    )
     model.to(DEVICE)
 
     os.makedirs(FIGS_DIR, exist_ok=True)
