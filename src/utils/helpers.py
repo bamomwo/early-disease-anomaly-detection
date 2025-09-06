@@ -274,31 +274,48 @@ def plot_roc_pr_curves(labels, errors, out_dir):
     plt.savefig(os.path.join(out_dir, 'pr_curve.png'), dpi=300)
     plt.close()
 
-def get_optimal_threshold(labels, errors):
+def get_optimal_threshold(y_true: np.ndarray, y_score: np.ndarray) -> float:
     """
-    Compute best-threshold via F1 score.
-
+    Find the optimal threshold for anomaly detection.
+    
+    If positive samples are present, it maximizes the F1-score.
+    If only normal samples are present, it uses the 99th percentile of errors.
+    
     Args:
-        labels (np.ndarray): 1D binary array of true labels (0 or 1).
-        errors (np.ndarray): 1D array of reconstruction errors.
-    
+        y_true: True labels (0 for normal, 1 for anomaly)
+        y_score: Reconstruction errors or anomaly scores
+        
     Returns:
-        float: The optimal threshold.
+        The optimal threshold.
     """
-    precision, recall, thresholds = precision_recall_curve(labels, errors)
-    # handle precision/recall/thresholds length mismatch
-    if len(thresholds) == len(precision) - 1:
-        thresholds = np.append(thresholds, thresholds[-1]) # repeat last threshold
+    # Check if there are any positive samples
+    if np.sum(y_true) == 0:
+        # No positive samples, use a percentile of the reconstruction errors
+        best_threshold = np.percentile(y_score, 99)
+        print(f"Warning: No positive samples in validation set. Using 99th percentile threshold: {best_threshold:.4f}")
+        return best_threshold
+
+    # If positive samples exist, find the threshold that maximizes F1-score
+    precision, recall, thresholds = precision_recall_curve(y_true, y_score)
     
-    # Calculate F1 score for each threshold
+    # Adjust for length mismatch between precision/recall and thresholds
+    if len(precision) > len(thresholds):
+        precision = precision[:-1]
+        recall = recall[:-1]
+        
+    # Calculate F1-score and handle division by zero
     f1_scores = 2 * (precision * recall) / (precision + recall)
-    f1_scores = np.nan_to_num(f1_scores) # handle division by zero
+    f1_scores = np.nan_to_num(f1_scores)
     
-    # Get the threshold that maximizes the F1 score
-    best_threshold_idx = np.argmax(f1_scores)
-    best_thresh = thresholds[best_threshold_idx]
-    
-    return best_thresh
+    # Find the threshold that maximizes F1 score
+    if len(f1_scores) > 0:
+        best_threshold = thresholds[np.argmax(f1_scores)]
+    else:
+        # Fallback if no valid F1 scores can be calculated
+        best_threshold = np.percentile(y_score, 99)
+        print(f"Warning: Could not calculate F1 scores. Using 99th percentile threshold: {best_threshold:.4f}")
+
+    return best_threshold
 
 # Confuction Matrix with F1-Score
 def plot_confusion_matrix(labels, errors, out_dir, threshold=None):

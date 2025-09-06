@@ -18,12 +18,8 @@ from src.utils.train_utils import train_one_epoch, validate
 from src.data.physiological_loader import PhysiologicalDataLoader
 
 # ── Constants ──
-DATA_PATH          = "data/normalized"
-PARTICIPANT        = "BG"
 DEVICE             = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 BEST_CONFIG_PATH   = f"config/tcn_config.json"
-CHECKPOINT_DIR     = f"results/tcn_ae/pure/{PARTICIPANT}"
-FIGS_DIR           = os.path.join(CHECKPOINT_DIR, "figs")
 
 # ── Hyperparam search settings ──
 HYPERPARAM_SPACE = {
@@ -33,10 +29,10 @@ HYPERPARAM_SPACE = {
     "kernel_size": [3, 5],
 }
 SEARCH_EPOCHS    = 50
-FINAL_EPOCHS     = 200
+FINAL_EPOCHS     = 400
 PATIENCE         = 10
 
-def train_and_evaluate(latent_size, lr, num_levels, kernel_size, num_epochs=SEARCH_EPOCHS):
+def train_and_evaluate(participant, data_path, latent_size, lr, num_levels, kernel_size, num_epochs=SEARCH_EPOCHS):
     model     = TCNAutoencoder(input_size=43,
                               latent_size=latent_size,
                               num_levels=num_levels,
@@ -44,9 +40,9 @@ def train_and_evaluate(latent_size, lr, num_levels, kernel_size, num_epochs=SEAR
     optimizer = torch.optim.Adam(model.parameters(), lr=lr, weight_decay=1e-4)
     loss_fn   = MaskedMSELoss()
 
-    loader    = PhysiologicalDataLoader(DATA_PATH)
+    loader    = PhysiologicalDataLoader(data_path)
     train_loader, val_loader, _ = loader.create_personalized_loaders(
-        PARTICIPANT,
+        participant,
         filter_stress_train=True,
         filter_stress_val=True
     )
@@ -69,7 +65,7 @@ def train_and_evaluate(latent_size, lr, num_levels, kernel_size, num_epochs=SEAR
 
     return best_val
 
-def do_grid_search():
+def do_grid_search(participant, data_path):
     best_score  = float('inf')
     best_config = None
 
@@ -78,7 +74,7 @@ def do_grid_search():
             HYPERPARAM_SPACE["lr"],
             HYPERPARAM_SPACE["num_levels"],
             HYPERPARAM_SPACE["kernel_size"]):
-        val = train_and_evaluate(ls, lr, nl, ks)
+        val = train_and_evaluate(participant, data_path, ls, lr, nl, ks)
         print(f"[SEARCH] latent_size={ls}, lr={lr:.0e}, num_levels={nl}, kernel_size={ks} → val_loss={val:.4f}")
         if val < best_score:
             best_score  = val
@@ -87,7 +83,7 @@ def do_grid_search():
     print(f"→ Best hyperparams: {best_config}, val_loss={best_score:.4f}")
     return best_config
 
-def train_final(latent_size, lr, num_levels, kernel_size):
+def train_final(participant, data_path, latent_size, lr, num_levels, kernel_size):
     model     = TCNAutoencoder(input_size=43,
                               latent_size=latent_size,
                               num_levels=num_levels,
@@ -95,19 +91,21 @@ def train_final(latent_size, lr, num_levels, kernel_size):
     optimizer = torch.optim.Adam(model.parameters(), lr=lr, weight_decay=1e-4)
     loss_fn   = MaskedMSELoss()
 
-    loader    = PhysiologicalDataLoader(DATA_PATH)
+    loader    = PhysiologicalDataLoader(data_path)
     train_loader, val_loader, _ = loader.create_personalized_loaders(
-        PARTICIPANT,
+        participant,
         filter_stress_train=True,
         filter_stress_val=True
     )
     model.to(DEVICE)
 
-    os.makedirs(FIGS_DIR, exist_ok=True)
-    os.makedirs(CHECKPOINT_DIR, exist_ok=True)
+    checkpoint_dir = f"results/tcn_ae/pure/{participant}"
+    figs_dir = os.path.join(checkpoint_dir, "figs")
+    os.makedirs(figs_dir, exist_ok=True)
+    os.makedirs(checkpoint_dir, exist_ok=True)
 
-    resume_path = os.path.join(CHECKPOINT_DIR, "best_model.pth")
-    losses_path = os.path.join(CHECKPOINT_DIR, f"losses_{PARTICIPANT}.json")
+    resume_path = os.path.join(checkpoint_dir, "best_model.pth")
+    losses_path = os.path.join(checkpoint_dir, f"losses_{participant}.json")
 
     start_epoch      = 0
     train_losses     = []
@@ -158,13 +156,15 @@ def train_final(latent_size, lr, num_levels, kernel_size):
     with open(losses_path, "w") as f:
         json.dump({"train_losses": train_losses, "val_losses": val_losses}, f)
 
-    final_model_path = os.path.join(CHECKPOINT_DIR, f"final_model_{PARTICIPANT}.pth")
+    final_model_path = os.path.join(checkpoint_dir, f"final_model_{participant}.pth")
     torch.save(model.state_dict(), final_model_path)
 
-    plot_loss_curves(train_losses, val_losses, latent_size, num_levels, FIGS_DIR)
+    plot_loss_curves(train_losses, val_losses, latent_size, num_levels, figs_dir)
 
 def main():
     parser = argparse.ArgumentParser()
+    parser.add_argument("--participant", type=str, required=True, help="Participant ID")
+    parser.add_argument("--data-path", type=str, default="data/normalized", help="Path to the data directory")
     parser.add_argument(
         "--mode",
         choices=["search", "train"],
@@ -174,7 +174,7 @@ def main():
     args = parser.parse_args()
 
     if args.mode == "search":
-        best_cfg = do_grid_search()
+        best_cfg = do_grid_search(args.participant, args.data_path)
         os.makedirs(os.path.dirname(BEST_CONFIG_PATH), exist_ok=True)
         with open(BEST_CONFIG_PATH, "w") as f:
             json.dump(best_cfg, f, indent=2)
@@ -189,7 +189,7 @@ def main():
         with open(BEST_CONFIG_PATH) as f:
             cfg = json.load(f)
         print(f"[TRAIN] Loaded hyperparams: {cfg}")
-        train_final(**cfg)
+        train_final(args.participant, args.data_path, **cfg)
 
 if __name__ == "__main__":
     main()

@@ -1,2 +1,7 @@
 data/
 *.log
+results/
+stats/
+**/*.pyc
+**/.DS_Store
+notebooks/.ipynb_checkpoints
