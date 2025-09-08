@@ -9,6 +9,8 @@ TRAIN_NORMAL_RATIO = 0.8  # Portion of normal sessions for training
 VAL_TEST_SPLIT_RATIO = 0.5 # Portion of the remaining data for validation
 OUTPUT_DIR = "data/normalized_stratified"
 STATS_FILE = "stats/norm_stats_stratified.json"
+SESSION_STATUS_FILE = "stats/session_stress_status.json"
+
 
 RANDOM_SEED = 42
 ID_COLUMN = 'session'
@@ -41,6 +43,10 @@ def normalize_participant(file_path, participant_id):
         else:
             normal_sessions.append(session_id)
 
+    session_status_info = {
+        'normal_sessions': normal_sessions,
+        'stressed_sessions': stressed_sessions
+    }
     # Sessions are already sorted by their first appearance because the df is sorted
 
     # 2. Create training set from earliest normal sessions
@@ -50,18 +56,28 @@ def normalize_participant(file_path, participant_id):
 
     # 3. Create validation and test pools from the rest
     remaining_normal_ids = normal_sessions[train_sessions_count:]
-    eval_session_ids = remaining_normal_ids + stressed_sessions
     
-    # Re-sort the combined evaluation pool by first appearance to maintain chronological order
-    eval_session_first_timestamp = {sid: df[df[ID_COLUMN] == sid][TIME_COLUMN].min() for sid in eval_session_ids}
-    eval_session_ids_sorted = sorted(eval_session_ids, key=lambda sid: eval_session_first_timestamp[sid])
+    # Sort stressed sessions chronologically
+    stressed_session_first_timestamp = {sid: df[df[ID_COLUMN] == sid][TIME_COLUMN].min() for sid in stressed_sessions}
+    stressed_sessions_sorted = sorted(stressed_sessions, key=lambda sid: stressed_session_first_timestamp[sid])
 
-    val_sessions_count = int(len(eval_session_ids_sorted) * VAL_TEST_SPLIT_RATIO)
-    val_session_ids = eval_session_ids_sorted[:val_sessions_count]
-    test_session_ids = eval_session_ids_sorted[val_sessions_count:]
+    # Split remaining normal sessions
+    val_normal_count = int(len(remaining_normal_ids) * VAL_TEST_SPLIT_RATIO)
+    val_normal_ids = remaining_normal_ids[:val_normal_count]
+    test_normal_ids = remaining_normal_ids[val_normal_count:]
+
+    # Split stressed sessions
+    val_stressed_count = int(len(stressed_sessions_sorted) * VAL_TEST_SPLIT_RATIO)
+    val_stressed_ids = stressed_sessions_sorted[:val_stressed_count]
+    test_stressed_ids = stressed_sessions_sorted[val_stressed_count:]
+
+    # Combine to form final val and test sets
+    val_session_ids = val_normal_ids + val_stressed_ids
+    test_session_ids = test_normal_ids + test_stressed_ids
 
     val_df = df[df[ID_COLUMN].isin(val_session_ids)].reset_index(drop=True)
     test_df = df[df[ID_COLUMN].isin(test_session_ids)].reset_index(drop=True)
+
 
     if train_df.empty or val_df.empty or test_df.empty:
         print(f"Warning: Could not create one or more data splits for participant {participant_id}. Check data distribution. Skipping.")
@@ -81,11 +97,11 @@ def normalize_participant(file_path, participant_id):
         filled = norm.copy()
         filled[FEATURE_COLUMNS] = filled[FEATURE_COLUMNS].fillna(0)
         mask = create_mask(norm, FEATURE_COLUMNS)
-        return norm, filled, mask
+        return filled, mask
 
-    train_norm, train_filled, train_mask = process_split(train_df)
-    val_norm, val_filled, val_mask = process_split(val_df)
-    test_norm, test_filled, test_mask = process_split(test_df)
+    train_filled, train_mask = process_split(train_df)
+    val_filled, val_mask = process_split(val_df)
+    test_filled, test_mask = process_split(test_df)
 
     stats = {
         'mean': means.tolist(),
@@ -93,19 +109,20 @@ def normalize_participant(file_path, participant_id):
         'features': FEATURE_COLUMNS
     }
 
-    return (train_norm, train_filled, train_mask,
-            val_norm, val_filled, val_mask,
-            test_norm, test_filled, test_mask,
-            stats)
+    return (train_filled, train_mask,
+            val_filled, val_mask,
+            test_filled, test_mask,
+            stats, session_status_info)
 
 # ---------- MAIN ----------
 def main(participant_id=None, output_dir=OUTPUT_DIR, force=False):
     for split in ["train", "val", "test"]:
-        for kind in ["norm", "filled", "mask"]:
+        for kind in ["filled", "mask"]:
             os.makedirs(os.path.join(output_dir, split, kind), exist_ok=True)
     os.makedirs(os.path.dirname(STATS_FILE), exist_ok=True)
 
     norm_stats = {}
+    session_statuses = {}
     if os.path.exists(STATS_FILE) and not force:
         try:
             with open(STATS_FILE, "r") as f:
@@ -115,6 +132,15 @@ def main(participant_id=None, output_dir=OUTPUT_DIR, force=False):
             print(f"Warning: Could not load existing stats file: {e}")
             norm_stats = {}
     
+    if os.path.exists(SESSION_STATUS_FILE) and not force:
+        try:
+            with open(SESSION_STATUS_FILE, "r") as f:
+                session_statuses = json.load(f)
+        except (json.JSONDecodeError, FileNotFoundError) as e:
+            print(f"Warning: Could not load existing session status file: {e}")
+            session_statuses = {}
+
+
     files_to_process = []
 
     if participant_id:
@@ -141,27 +167,30 @@ def main(participant_id=None, output_dir=OUTPUT_DIR, force=False):
         if result is None:
             continue
 
-        (train_norm, train_filled, train_mask,
-         val_norm, val_filled, val_mask,
-         test_norm, test_filled, test_mask,
-         stats) = result
+        (train_filled, train_mask,
+         val_filled, val_mask,
+         test_filled, test_mask,
+         stats, session_status_info) = result
 
-        train_norm.to_csv(os.path.join(output_dir, "train", "norm", f"{pid}_train_norm.csv"), index=False)
         train_filled.to_csv(os.path.join(output_dir, "train", "filled", f"{pid}_train_filled.csv"), index=False)
         train_mask.to_csv(os.path.join(output_dir, "train", "mask", f"{pid}_train_mask.csv"), index=False)
 
-        val_norm.to_csv(os.path.join(output_dir, "val", "norm", f"{pid}_val_norm.csv"), index=False)
         val_filled.to_csv(os.path.join(output_dir, "val", "filled", f"{pid}_val_filled.csv"), index=False)
         val_mask.to_csv(os.path.join(output_dir, "val", "mask", f"{pid}_val_mask.csv"), index=False)
 
-        test_norm.to_csv(os.path.join(output_dir, "test", "norm", f"{pid}_test_norm.csv"), index=False)
         test_filled.to_csv(os.path.join(output_dir, "test", "filled", f"{pid}_test_filled.csv"), index=False)
         test_mask.to_csv(os.path.join(output_dir, "test", "mask", f"{pid}_test_mask.csv"), index=False)
 
         norm_stats[pid] = stats
+        session_statuses[pid] = session_status_info
+
 
     with open(STATS_FILE, "w") as f:
         json.dump(norm_stats, f, indent=4)
+    
+    with open(SESSION_STATUS_FILE, "w") as f:
+        json.dump(session_statuses, f, indent=4)
+
 
     print(f"Normalization complete. Statistics saved for {len(norm_stats)} participants.")
 

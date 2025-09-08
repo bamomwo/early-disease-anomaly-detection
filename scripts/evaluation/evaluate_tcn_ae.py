@@ -37,7 +37,7 @@ def main():
                         help="Path to the saved model checkpoint")
     parser.add_argument("--model-dir", default=None,
                         help="Directory containing the model (for general models)")
-    parser.add_argument("--data-path", default="data/normalized")
+    parser.add_argument("--data-path", default="data/normalized_stratified")
     parser.add_argument("--figs-dir", default=None,
                         help="Directory to save evaluation figures")
     parser.add_argument("--input-size", type=int, default=None,
@@ -142,10 +142,19 @@ def main():
     val_diff   = (val_inputs - val_outputs)**2 * val_masks
     val_errors = val_diff.sum(axis=(1,2)) / val_masks.sum(axis=(1,2))
     val_labels = get_sequence_labels(val_loader, participants_to_evaluate, split="val")
+    # Diagnostics: class balance before/after finite filter (val)
+    num_val = len(val_labels)
+    num_val_pos = int(val_labels.sum())
+    num_val_neg = int(num_val - num_val_pos)
+    print(f"[VAL] Labels before finite filter -> total={num_val}, pos={num_val_pos}, neg={num_val_neg}")
     
     valid_val = np.isfinite(val_errors)
     val_errors = val_errors[valid_val]
     val_labels = val_labels[valid_val]
+    num_val_f = len(val_labels)
+    num_val_pos_f = int(val_labels.sum())
+    num_val_neg_f = int(num_val_f - num_val_pos_f)
+    print(f"[VAL] Labels after  finite filter -> total={num_val_f}, pos={num_val_pos_f}, neg={num_val_neg_f}")
 
     best_threshold = get_optimal_threshold(val_labels, val_errors)
     print(f"Optimal threshold found: {best_threshold:.4f}")
@@ -159,10 +168,19 @@ def main():
     test_diff   = (test_inputs - test_outputs)**2 * test_masks
     test_errors = test_diff.sum(axis=(1,2)) / test_masks.sum(axis=(1,2))
     test_labels = get_sequence_labels(test_loader, participants_to_evaluate, split="test")
+    # Diagnostics: class balance before/after finite filter (test)
+    num_test = len(test_labels)
+    num_test_pos = int(test_labels.sum())
+    num_test_neg = int(num_test - num_test_pos)
+    print(f"[TEST] Labels before finite filter -> total={num_test}, pos={num_test_pos}, neg={num_test_neg}")
 
     valid_test = np.isfinite(test_errors)
     test_errors = test_errors[valid_test]
     test_labels = test_labels[valid_test]
+    num_test_f = len(test_labels)
+    num_test_pos_f = int(test_labels.sum())
+    num_test_neg_f = int(num_test_f - num_test_pos_f)
+    print(f"[TEST] Labels after  finite filter -> total={num_test_f}, pos={num_test_pos_f}, neg={num_test_neg_f}")
 
     # ── 5. Latent Space Visualization on Test Set ──
     latents = extract_latents(model, test_loader, device)

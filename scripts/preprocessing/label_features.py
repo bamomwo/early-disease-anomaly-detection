@@ -50,7 +50,7 @@ def main():
     args = parse_args()
     processed_dir = os.path.join('data', 'processed')
     labelled_dir = os.path.join('data', 'labelled')
-    survey_path = os.path.join('data', 'raw', 'surveyresult.csv')
+    survey_path = os.path.join('data', 'raw', 'surveyresults.csv')
 
     if args.participant:
         annotate_participant(args.participant, survey_path, processed_dir, labelled_dir)

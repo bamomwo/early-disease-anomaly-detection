@@ -164,7 +164,7 @@ def train_final(participant, data_path, latent_size, lr, num_levels, kernel_size
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--participant", type=str, required=True, help="Participant ID")
-    parser.add_argument("--data-path", type=str, default="data/normalized", help="Path to the data directory")
+    parser.add_argument("--data-path", type=str, default="data/normalized_stratified", help="Path to the data directory")
     parser.add_argument(
         "--mode",
         choices=["search", "train"],

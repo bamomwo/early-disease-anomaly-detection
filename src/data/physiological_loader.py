@@ -80,26 +80,38 @@ class PhysiologicalDataset(Dataset):
     
     def _load_data(self):
         """Load and process data for all participants."""
+        successful_loads = 0
         for participant in self.participants:
-            self._load_participant_data(participant)
+            if self._load_participant_data(participant):
+                successful_loads += 1
+        
+        if successful_loads == len(self.participants):
+            logger.info(f"Successfully loaded {self.data_type.upper()} data for all {len(self.participants)} participants.")
+        else:
+            logger.warning(
+                f"Loaded {self.data_type.upper()} data for {successful_loads} out of {len(self.participants)} participants. "
+                f"{len(self.participants) - successful_loads} failed."
+            )
+        logger.info("")
     
     def _load_participant_data(self, participant: str):
         """Load data for a single participant from the new normalized structure."""
         try:
+            logger.info(f"─" * 15 + f" Processing participant: {participant} ({self.data_type.upper()}) " + f"─" * 15)
             # Construct file paths for the new structure
             filled_path = self.data_path / self.data_type / 'filled' / f'{participant}_{self.data_type}_filled.csv'
             mask_path = self.data_path / self.data_type / 'mask' / f'{participant}_{self.data_type}_mask.csv'
 
-            print("Loading filled data from:", filled_path)
-            print("Loading mask from:", mask_path)
+            logger.debug(f"Loading filled data from: {filled_path}")
+            logger.debug(f"Loading mask from: {mask_path}")
 
             # Check if files exist
             if not filled_path.exists():
                 logger.error(f"Filled data file not found: {filled_path}")
-                return
+                return False
             if not mask_path.exists():
                 logger.error(f"Mask data file not found: {mask_path}")
-                return
+                return False
 
             # Load filled data (NaNs replaced with zeros)
             filled_data_ = pd.read_csv(filled_path)
@@ -156,9 +168,11 @@ class PhysiologicalDataset(Dataset):
 
             logger.info(f"Loaded {len(sequences)} sequences for participant {participant}")
 
+            return True
+
         except Exception as e:
             logger.error(f"Error loading data for participant {participant}: {str(e)}")
-            raise
+            return False
     
     def _create_sequences(self, data: np.ndarray, mask: np.ndarray) -> Tuple[List[np.ndarray], List[np.ndarray]]:
         """
@@ -400,12 +414,13 @@ class PhysiologicalDataLoader:
             **kwargs
         )
         # Log summary of loaded sequences
+        logger.debug("─" * 20 + " General Loaders Summary " + "─" * 20)
         train_sequences = len(train_loader.dataset)
         val_sequences = len(val_loader.dataset)
         test_sequences = len(test_loader.dataset)
-        logger.info(f"Train loader: {train_sequences} sequences loaded for {len(participants)} participants.")
-        logger.info(f"Val loader: {val_sequences} sequences loaded for {len(participants)} participants.")
-        logger.info(f"Test loader: {test_sequences} sequences loaded for {len(participants)} participants.")
+        logger.debug(f"Train loader: {train_sequences} sequences loaded for {len(participants)} participants.")
+        logger.debug(f"Val loader: {val_sequences} sequences loaded for {len(participants)} participants.")
+        logger.debug(f"Test loader: {test_sequences} sequences loaded for {len(participants)} participants.")
         return train_loader, val_loader, test_loader
     
 

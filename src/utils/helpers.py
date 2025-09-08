@@ -109,11 +109,38 @@ def get_sequence_labels(test_loader, participant_id, split='test'):
     
     all_sequence_labels = []
     
+    # Try to derive base data path from the provided loader (supports new structure)
+    base_data_path = None
+    try:
+        base_data_path = getattr(getattr(test_loader, 'dataset', None), 'data_path', None)
+    except Exception:
+        base_data_path = None
+
     for pid in participant_ids:
-        # Path to the original normalized data (with stress_level column)
-        norm_path = f"data/normalized/{split}/norm/{pid}_{split}_norm.csv"
-        if not os.path.exists(norm_path):
-            raise FileNotFoundError(f"Could not find: {norm_path}")
+        # Prefer the loader's data_path (e.g., data/normalized_stratified)
+        norm_path = None
+        if base_data_path is not None:
+            # 1) New structure: use filled data which contains stress_level
+            filled_candidate = os.path.join(str(base_data_path), split, 'filled', f'{pid}_{split}_filled.csv')
+            if os.path.exists(filled_candidate):
+                norm_path = filled_candidate
+            else:
+                # 2) Try new structure but with norm subdir if present
+                norm_candidate = os.path.join(str(base_data_path), split, 'norm', f'{pid}_{split}_norm.csv')
+                if os.path.exists(norm_candidate):
+                    norm_path = norm_candidate
+        # 3) Legacy default location
+        if norm_path is None:
+            legacy_path = f"data/normalized/{split}/norm/{pid}_{split}_norm.csv"
+            if os.path.exists(legacy_path):
+                norm_path = legacy_path
+
+        if norm_path is None or not os.path.exists(norm_path):
+            raise FileNotFoundError(f"Could not find label source for participant {pid}. Tried: "
+                                    f"{os.path.join(str(base_data_path), split, 'filled', f'{pid}_{split}_filled.csv') if base_data_path else 'N/A'} and "
+                                    f"{os.path.join(str(base_data_path), split, 'norm', f'{pid}_{split}_norm.csv') if base_data_path else 'N/A'} and "
+                                    f"data/normalized/{split}/norm/{pid}_{split}_norm.csv")
+
         df_pd = pd.read_csv(norm_path)
         if 'stress_level' not in df_pd.columns:
             raise ValueError("stress_level column not found in test data.")
