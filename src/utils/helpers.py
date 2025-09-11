@@ -87,19 +87,20 @@ def plot_loss_curves(train_losses, val_losses, hidden_size, num_layers, figs_dir
     plt.close()
 
 # Get Sequence Labels for evaluation
-def get_sequence_labels(test_loader, participant_id, split='test'):
+def get_sequence_labels(test_loader, participant_id, split='test', stress_proportion_threshold=0.0):
     """
-    For each sequence, assign a binary label:
-    0 = stress-free (all time steps in sequence are stress-free)
-    1 = stressed (any time step in sequence is stressed)
-    
+    For each sequence, assign a binary label based on the proportion of stressed time steps.
+
     Args:
-        test_loader: DataLoader containing test sequences
-        participant_id: Single participant ID (str) or list of participant IDs
-        split: Data split ('train', 'val', 'test')
-    
+        test_loader: DataLoader containing test sequences.
+        participant_id: Single participant ID (str) or list of participant IDs.
+        split: Data split ('train', 'val', 'test').
+        stress_proportion_threshold (float): The minimum proportion of stressed time steps
+                                             required to label a sequence as anomalous (1).
+                                             Default is 0.0 (any stress point makes it anomalous).
+
     Returns:
-        np.ndarray: Binary labels for each sequence
+        np.ndarray: Binary labels for each sequence.
     """
     # Handle both single participant and multiple participants
     if isinstance(participant_id, str):
@@ -150,11 +151,16 @@ def get_sequence_labels(test_loader, participant_id, split='test'):
         step_size = test_loader.dataset.step_size
         n_windows = len(stress_labels)
         sequence_labels = []
-        # For each sequence, assign label 1 if any time step is stressed, else 0
+        # For each sequence, assign a label based on the proportion of stressed time steps
         for start_idx in range(0, n_windows - seq_len + 1, step_size):
             end_idx = start_idx + seq_len
             seq_labels = stress_labels[start_idx:end_idx]
-            label = 1 if np.any(seq_labels > 0) else 0
+            
+            # Calculate the proportion of stressed time steps in the sequence
+            stressed_proportion = np.mean(seq_labels > 0)
+            
+            # Label as anomalous (1) if the proportion exceeds the threshold
+            label = 1 if stressed_proportion > stress_proportion_threshold else 0
             sequence_labels.append(label)
         all_sequence_labels.extend(sequence_labels)
     
@@ -330,9 +336,9 @@ def get_optimal_threshold(y_true: np.ndarray, y_score: np.ndarray) -> float:
         precision = precision[:-1]
         recall = recall[:-1]
         
-    # Calculate F1-score and handle division by zero
-    f1_scores = 2 * (precision * recall) / (precision + recall)
-    f1_scores = np.nan_to_num(f1_scores)
+    # Calculate F1-score safely
+    denominator = precision + recall
+    f1_scores = np.divide(2 * (precision * recall), denominator, out=np.zeros_like(denominator), where=denominator!=0)
     
     # Find the threshold that maximizes F1 score
     if len(f1_scores) > 0:

@@ -25,13 +25,26 @@ def create_mask(df, feature_cols):
 def normalize_participant(file_path, participant_id):
     print(f"Normalizing {participant_id}...")
     df = pd.read_csv(file_path)
+
+    # Load selected features from config
+    try:
+        with open("config/selected_features.json", 'r') as f:
+            selected_features = json.load(f)['features']
+    except FileNotFoundError:
+        print("Warning: 'config/selected_features.json' not found. Falling back to all numeric features.")
+        selected_features = df.select_dtypes(include=[np.number]).columns.tolist()
+        selected_features = [col for col in selected_features if col not in [ID_COLUMN, TIME_COLUMN, STRESS_COLUMN]]
+
+    # Immediately subset the DataFrame to only the selected features + essential columns
+    essential_cols = [col for col in [ID_COLUMN, TIME_COLUMN, STRESS_COLUMN] if col in df.columns]
+    df = df[essential_cols + selected_features]
+
     df[TIME_COLUMN] = pd.to_datetime(df[TIME_COLUMN])
     df = df.sort_values(TIME_COLUMN).reset_index(drop=True)
 
     global FEATURE_COLUMNS
     if FEATURE_COLUMNS is None:
-        FEATURE_COLUMNS = df.select_dtypes(include=[np.number]).columns.tolist()
-        FEATURE_COLUMNS = [col for col in FEATURE_COLUMNS if col not in [ID_COLUMN, TIME_COLUMN, STRESS_COLUMN]]
+        FEATURE_COLUMNS = selected_features
 
     # 1. Identify sessions and their stress status, preserving order
     session_groups = df.groupby(ID_COLUMN)

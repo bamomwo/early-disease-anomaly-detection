@@ -332,6 +332,7 @@ class PhysiologicalDataLoader:
     def create_personalized_loaders(
         self,
         participant: str,
+        data_params: Dict[str, Dict],
         filter_stress_train: bool = False,
         filter_stress_val: bool = False,
         filter_stress_test: bool = False,
@@ -342,6 +343,7 @@ class PhysiologicalDataLoader:
         
         Args:
             participant: Participant ID
+            data_params: Dictionary with specific params for 'train', 'val', 'test'
             filter_stress_train: Whether to filter stress for the training set.
             filter_stress_val: Whether to filter stress for the validation set.
             filter_stress_test: Whether to filter stress for the test set.
@@ -350,31 +352,36 @@ class PhysiologicalDataLoader:
         Returns:
             Tuple of (train_loader, val_loader, test_loader)
         """
+        train_params = {**data_params.get('train', {}), **kwargs}
+        val_params = {**data_params.get('val', {}), **kwargs}
+        test_params = {**data_params.get('test', {}), **kwargs}
+
         train_loader = self.create_dataloader(
             participants=[participant],
             data_type='train',
             filter_stress=filter_stress_train,
-            **kwargs
+            **train_params
         )
         val_loader = self.create_dataloader(
             participants=[participant],
             data_type='val',
             shuffle=False,  # Never shuffle val data
             filter_stress=filter_stress_val,
-            **kwargs
+            **val_params
         )
         test_loader = self.create_dataloader(
             participants=[participant],
             data_type='test',
             shuffle=False,  # Never shuffle test data
             filter_stress=filter_stress_test,
-            **kwargs
+            **test_params
         )
         return train_loader, val_loader, test_loader
 
     def create_general_loaders(
         self,
         participants: List[str],
+        data_params: Dict[str, Dict],
         filter_stress_train: bool = False,
         filter_stress_val: bool = False,
         filter_stress_test: bool = False,
@@ -385,6 +392,7 @@ class PhysiologicalDataLoader:
         
         Args:
             participants: List of participant IDs
+            data_params: Dictionary with specific params for 'train', 'val', 'test'
             filter_stress_train: Whether to filter stress for the training set.
             filter_stress_val: Whether to filter stress for the validation set.
             filter_stress_test: Whether to filter stress for the test set.
@@ -393,25 +401,29 @@ class PhysiologicalDataLoader:
         Returns:
             Tuple of (train_loader, val_loader, test_loader)
         """
+        train_params = {**data_params.get('train', {}), **kwargs}
+        val_params = {**data_params.get('val', {}), **kwargs}
+        test_params = {**data_params.get('test', {}), **kwargs}
+
         train_loader = self.create_dataloader(
             participants=participants,
             data_type='train',
             filter_stress=filter_stress_train,
-            **kwargs
+            **train_params
         )
         val_loader = self.create_dataloader(
             participants=participants,
             data_type='val',
             shuffle=False,  # Never shuffle val data
             filter_stress=filter_stress_val,
-            **kwargs
+            **val_params
         )
         test_loader = self.create_dataloader(
             participants=participants,
             data_type='test',
             shuffle=False,  # Never shuffle test data
             filter_stress=filter_stress_test,
-            **kwargs
+            **test_params
         )
         # Log summary of loaded sequences
         logger.debug("─" * 20 + " General Loaders Summary " + "─" * 20)

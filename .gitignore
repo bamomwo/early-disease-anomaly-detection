@@ -2,6 +2,7 @@ data/
 *.log
 results/
 stats/
+stats_1/
 **/*.pyc
 **/.DS_Store
 notebooks/.ipynb_checkpoints

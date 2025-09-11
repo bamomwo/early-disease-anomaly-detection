@@ -27,25 +27,42 @@ HYPERPARAM_SPACE = {
     "lr":          [1e-4, 5e-4, 1e-3],
     "num_levels":  [1, 2],
     "kernel_size": [3, 5],
+    "sequence_length": [24, 48, 72],
+    "overlap": [0.5, 0.8]
 }
 SEARCH_EPOCHS    = 50
 FINAL_EPOCHS     = 400
 PATIENCE         = 10
 
-def train_and_evaluate(participant, data_path, latent_size, lr, num_levels, kernel_size, num_epochs=SEARCH_EPOCHS):
-    model     = TCNAutoencoder(input_size=43,
-                              latent_size=latent_size,
-                              num_levels=num_levels,
-                              kernel_size=kernel_size)
-    optimizer = torch.optim.Adam(model.parameters(), lr=lr, weight_decay=1e-4)
-    loss_fn   = MaskedMSELoss()
+def train_and_evaluate(participant, data_path, latent_size, lr, num_levels, kernel_size, sequence_length, overlap, num_epochs=SEARCH_EPOCHS):
+    data_params = {
+        "train": {"sequence_length": sequence_length, "overlap": overlap},
+        "val": {"sequence_length": sequence_length, "overlap": 0.2},
+        "test": {"sequence_length": sequence_length, "overlap": 0.2},
+    }
 
     loader    = PhysiologicalDataLoader(data_path)
     train_loader, val_loader, _ = loader.create_personalized_loaders(
         participant,
+        data_params=data_params,
         filter_stress_train=True,
         filter_stress_val=True
     )
+    
+    # Determine input size dynamically
+    try:
+        n_features = train_loader.dataset.get_feature_info()['n_features']
+    except (IndexError, KeyError):
+        print(f"Warning: Could not load data for participant {participant}. Skipping this combination.")
+        return float('inf')
+
+    model     = TCNAutoencoder(input_size=n_features,
+                              latent_size=latent_size,
+                              num_levels=num_levels,
+                              kernel_size=kernel_size)
+    optimizer = torch.optim.Adam(model.parameters(), lr=lr, weight_decay=1e-4)
+    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, 'min', factor=0.1, patience=5)
+    loss_fn   = MaskedMSELoss()
     model.to(DEVICE)
 
     best_val = float('inf')
@@ -54,6 +71,8 @@ def train_and_evaluate(participant, data_path, latent_size, lr, num_levels, kern
     for epoch in range(num_epochs):
         train_loss = train_one_epoch(model, train_loader, optimizer, DEVICE, loss_fn)
         val_loss   = validate(model, val_loader, DEVICE, loss_fn)
+
+        scheduler.step(val_loss)
 
         if val_loss < best_val:
             best_val = val_loss
@@ -69,34 +88,59 @@ def do_grid_search(participant, data_path):
     best_score  = float('inf')
     best_config = None
 
-    for ls, lr, nl, ks in itertools.product(
-            HYPERPARAM_SPACE["latent_size"],
-            HYPERPARAM_SPACE["lr"],
-            HYPERPARAM_SPACE["num_levels"],
-            HYPERPARAM_SPACE["kernel_size"]):
-        val = train_and_evaluate(participant, data_path, ls, lr, nl, ks)
-        print(f"[SEARCH] latent_size={ls}, lr={lr:.0e}, num_levels={nl}, kernel_size={ks} → val_loss={val:.4f}")
+    param_combinations = list(itertools.product(
+        HYPERPARAM_SPACE["latent_size"],
+        HYPERPARAM_SPACE["lr"],
+        HYPERPARAM_SPACE["num_levels"],
+        HYPERPARAM_SPACE["kernel_size"],
+        HYPERPARAM_SPACE["sequence_length"],
+        HYPERPARAM_SPACE["overlap"]
+    ))
+
+    for i, (ls, lr, nl, ks, sl, ov) in enumerate(param_combinations):
+        print(f"[SEARCH {i+1}/{len(param_combinations)}] Running with config: ls={ls}, lr={lr:.0e}, nl={nl}, ks={ks}, sl={sl}, ov={ov}")
+        val = train_and_evaluate(participant, data_path, ls, lr, nl, ks, sl, ov)
+        print(f"→ val_loss={val:.4f}")
         if val < best_score:
             best_score  = val
-            best_config = {"latent_size": ls, "lr": lr, "num_levels": nl, "kernel_size": ks}
+            best_config = {
+                "latent_size": ls, 
+                "lr": lr, 
+                "num_levels": nl, 
+                "kernel_size": ks,
+                "data_params": {
+                    "train": {"sequence_length": sl, "overlap": ov},
+                    "val": {"sequence_length": sl, "overlap": 0.2},
+                    "test": {"sequence_length": sl, "overlap": 0.2}
+                }
+            }
 
     print(f"→ Best hyperparams: {best_config}, val_loss={best_score:.4f}")
     return best_config
 
-def train_final(participant, data_path, latent_size, lr, num_levels, kernel_size):
-    model     = TCNAutoencoder(input_size=43,
+def train_final(participant, data_path, latent_size, lr, num_levels, kernel_size, data_params):
+    loader    = PhysiologicalDataLoader(data_path)
+    train_loader, val_loader, _ = loader.create_personalized_loaders(
+        participant,
+        data_params=data_params,
+        filter_stress_train=True,
+        filter_stress_val=True
+    )
+
+    # Determine input size dynamically
+    try:
+        n_features = train_loader.dataset.get_feature_info()['n_features']
+    except (IndexError, KeyError):
+        print(f"Error: Could not load data for participant {participant}. Aborting training.")
+        return
+
+    model     = TCNAutoencoder(input_size=n_features,
                               latent_size=latent_size,
                               num_levels=num_levels,
                               kernel_size=kernel_size)
     optimizer = torch.optim.Adam(model.parameters(), lr=lr, weight_decay=1e-4)
+    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, 'min', factor=0.1, patience=5)
     loss_fn   = MaskedMSELoss()
-
-    loader    = PhysiologicalDataLoader(data_path)
-    train_loader, val_loader, _ = loader.create_personalized_loaders(
-        participant,
-        filter_stress_train=True,
-        filter_stress_val=True
-    )
     model.to(DEVICE)
 
     checkpoint_dir = f"results/tcn_ae/pure/{participant}"
@@ -134,6 +178,8 @@ def train_final(participant, data_path, latent_size, lr, num_levels, kernel_size
 
         train_losses.append(t_loss)
         val_losses.append(v_loss)
+
+        scheduler.step(v_loss)
 
         if v_loss < best_val_loss:
             best_val_loss    = v_loss
@@ -188,8 +234,17 @@ def main():
             )
         with open(BEST_CONFIG_PATH) as f:
             cfg = json.load(f)
+        
+        train_params = {
+            "latent_size": cfg["latent_size"],
+            "lr": cfg["lr"],
+            "num_levels": cfg["num_levels"],
+            "kernel_size": cfg["kernel_size"],
+            "data_params": cfg["data_params"]
+        }
+        
         print(f"[TRAIN] Loaded hyperparams: {cfg}")
-        train_final(args.participant, args.data_path, **cfg)
+        train_final(args.participant, args.data_path, **train_params)
 
 if __name__ == "__main__":
     main()

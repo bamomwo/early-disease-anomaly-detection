@@ -8,6 +8,8 @@ import torch
 from typing import List, Optional
 
 
+from sklearn.metrics import precision_recall_fscore_support
+
 # ── Project setup ──
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '../..')))
 
@@ -117,10 +119,15 @@ def main():
     loader_factory = PhysiologicalDataLoader(args.data_path)
     
     if args.model_type in ["pure", "personalized"]:
+        data_params = model_config.get("data_params", {
+            "val": {"sequence_length": 24, "overlap": 0.2},
+            "test": {"sequence_length": 24, "overlap": 0.2}
+        })
         _, val_loader, test_loader = loader_factory.create_personalized_loaders(
             args.participant,
-            filter_stress_val=False, # mixed data for thresholding
-            filter_stress_test=False # mixed data for testing
+            data_params=data_params,
+            filter_stress_val=False,  # mixed data for thresholding
+            filter_stress_test=False  # mixed data for testing
         )
         participants_to_evaluate = [args.participant]
     else:
@@ -133,31 +140,45 @@ def main():
 
     loss_fn = MaskedMSELoss()
 
-    # ── 3. Evaluate on Validation Set to find threshold ──
-    print("Evaluating on validation set to find optimal threshold...")
+    # ── 3. Evaluate on Validation Set to find thresholds ──
+    print("Evaluating on validation set to find optimal thresholds...")
     _, val_inputs, val_outputs, val_masks = evaluate(model, val_loader, device, loss_fn)
     val_inputs  = np.concatenate(val_inputs,  axis=0)
     val_outputs = np.concatenate(val_outputs, axis=0)
     val_masks   = np.concatenate(val_masks,   axis=0)
     val_diff   = (val_inputs - val_outputs)**2 * val_masks
     val_errors = val_diff.sum(axis=(1,2)) / val_masks.sum(axis=(1,2))
-    val_labels = get_sequence_labels(val_loader, participants_to_evaluate, split="val")
-    # Diagnostics: class balance before/after finite filter (val)
-    num_val = len(val_labels)
-    num_val_pos = int(val_labels.sum())
-    num_val_neg = int(num_val - num_val_pos)
-    print(f"[VAL] Labels before finite filter -> total={num_val}, pos={num_val_pos}, neg={num_val_neg}")
-    
-    valid_val = np.isfinite(val_errors)
-    val_errors = val_errors[valid_val]
-    val_labels = val_labels[valid_val]
-    num_val_f = len(val_labels)
-    num_val_pos_f = int(val_labels.sum())
-    num_val_neg_f = int(num_val_f - num_val_pos_f)
-    print(f"[VAL] Labels after  finite filter -> total={num_val_f}, pos={num_val_pos_f}, neg={num_val_neg_f}")
 
-    best_threshold = get_optimal_threshold(val_labels, val_errors)
-    print(f"Optimal threshold found: {best_threshold:.4f}")
+    # Find best stress proportion threshold
+    best_f1 = -1
+    best_proportion_threshold = 0.0
+    best_recon_error_threshold = 0.0
+
+    for prop_threshold in np.arange(0, 0.55, 0.05):
+        val_labels = get_sequence_labels(
+            val_loader, 
+            participants_to_evaluate, 
+            split="val",
+            stress_proportion_threshold=prop_threshold
+        )
+        
+        valid_val = np.isfinite(val_errors)
+        temp_val_errors = val_errors[valid_val]
+        temp_val_labels = val_labels[valid_val]
+
+        if len(temp_val_labels) > 0 and np.sum(temp_val_labels) > 0:
+            recon_threshold = get_optimal_threshold(temp_val_labels, temp_val_errors)
+            preds = (temp_val_errors > recon_threshold).astype(int)
+            _, _, f1, _ = precision_recall_fscore_support(
+                temp_val_labels, preds, average='binary', zero_division=0
+            )
+            if f1 > best_f1:
+                best_f1 = f1
+                best_proportion_threshold = prop_threshold
+                best_recon_error_threshold = recon_threshold
+
+    print(f"Optimal stress proportion threshold: {best_proportion_threshold:.2f}")
+    print(f"Optimal reconstruction error threshold: {best_recon_error_threshold:.4f}")
 
     # ── 4. Evaluate on Test Set ──
     print("Evaluating on test set...")
@@ -167,7 +188,13 @@ def main():
     test_masks   = np.concatenate(test_masks,   axis=0)
     test_diff   = (test_inputs - test_outputs)**2 * test_masks
     test_errors = test_diff.sum(axis=(1,2)) / test_masks.sum(axis=(1,2))
-    test_labels = get_sequence_labels(test_loader, participants_to_evaluate, split="test")
+    
+    test_labels = get_sequence_labels(
+        test_loader, 
+        participants_to_evaluate, 
+        split="test",
+        stress_proportion_threshold=best_proportion_threshold
+    )
     # Diagnostics: class balance before/after finite filter (test)
     num_test = len(test_labels)
     num_test_pos = int(test_labels.sum())
@@ -199,7 +226,7 @@ def main():
 
     # 6.3 Confusion Matrix
     plot_confusion_matrix(
-        test_labels, test_errors, out_dir=args.figs_dir, threshold=best_threshold
+        test_labels, test_errors, out_dir=args.figs_dir, threshold=best_recon_error_threshold
     )
 
     # 6.4 Example Time-Series Reconstructions

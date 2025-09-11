@@ -2,5 +2,19 @@
   "latent_size": 128,
   "lr": 0.001,
   "num_levels": 1,
-  "kernel_size": 3
+  "kernel_size": 3,
+  "data_params": {
+    "train": {
+      "sequence_length": 24,
+      "overlap": 0.5
+    },
+    "val": {
+      "sequence_length": 24,
+      "overlap": 0.0
+    },
+    "test": {
+      "sequence_length": 24,
+      "overlap": 0.0
+    }
+  }
 } 
