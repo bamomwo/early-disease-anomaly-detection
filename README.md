@@ -1,24 +1,23 @@
-# Early Disease Anomaly Detection using LSTM Autoencoder
+# Anomaly Detection in Physiological Time-Series Data
 
-This project provides a framework for detecting anomalies in physiological time-series data, with the goal of identifying early signs of disease. It utilizes a `MaskedLSTMAutoencoder`, a deep learning model built with PyTorch, designed to learn and reconstruct normal physiological patterns. Anomalies are detected when the model's reconstruction error for a given data sequence exceeds a learned threshold, indicating a deviation from normal behavior.
+This project provides a flexible framework for detecting anomalies in physiological time-series data, with the goal of identifying early signs of disease or stress. It utilizes a variety of deep learning models, including LSTMs, TCNs, and Transformers, designed to learn and reconstruct normal physiological patterns. Anomalies are detected when the model's reconstruction error for a given data sequence exceeds a learned threshold, indicating a deviation from normal behavior.
 
 The system is designed to be flexible, supporting both generalized models trained on data from multiple subjects and personalized models trained on data from a single individual.
 
 ## Key Features
 
-- **LSTM Autoencoder:** Employs a Long Short-Term Memory (LSTM) autoencoder to effectively model temporal dependencies in physiological data.
-- **Masking for Missing Data:** The model and loss function are designed to handle missing data points (NaNs), a common issue with sensor data, ensuring robust performance.
-- **Generalized and Personalized Models:** Supports both a general model trained on a diverse dataset and personalized models tailored to individual-specific patterns.
-- **Modular Data Pipeline:** A structured, multi-step data processing pipeline prepares the raw data for training.
-- **Comprehensive Training and Evaluation:** Includes scripts for training, evaluation, and hyperparameter management, with features like early stopping and model checkpointing.
-
-## System Architecture
-
-The project follows a standard machine learning project structure:
-
-1.  **Data Processing:** Raw data is processed through a series of scripts that handle cleaning, normalization, feature engineering, and resampling.
-2.  **Model Training:** The `MaskedLSTMAutoencoder` is trained on the processed data. The training process aims to minimize the reconstruction error on normal data.
-3.  **Anomaly Detection:** Once trained, the model is used to reconstruct new data. A high reconstruction error indicates a potential anomaly.
+- **Multiple Autoencoder Architectures:** Implements several models to capture temporal dependencies, including:
+    - Long Short-Term Memory (LSTM), with a Bidirectional option
+    - Temporal Convolutional Network (TCN)
+    - Transformer
+- **Advanced Feature Engineering:** Extracts a comprehensive set of features from raw biosignals, including:
+    - **Time-Domain HRV:** RMSSD, SDNN, pNN50, etc.
+    - **Frequency-Domain HRV:** LF, HF, and LF/HF ratio to measure autonomic nervous system balance.
+    - **Non-Linear HRV:** Poincaré plot descriptors (SD1, SD2) and Sample Entropy to capture signal complexity.
+    - **EDA and BVP analysis:** Features from electrodermal activity and blood volume pulse.
+- **Masking for Missing Data:** The models and loss functions are designed to handle missing data points (NaNs), a common issue with sensor data.
+- **Modular Data Pipeline:** A structured, single-script data processing pipeline prepares the raw data for training.
+- **Comprehensive Training and Evaluation:** Includes scripts for training, evaluation, and hyperparameter management.
 
 ## Directory Structure
 
@@ -27,28 +26,29 @@ early-disease-anomaly-detection/
 ├── README.md
 ├── requirements.txt                 # Python dependencies
 ├── config/
-│   └── config.yaml                  # Configuration file for hyperparameters
+│   └── *.yaml / *.json              # Configuration files for models
 ├── data/
 │   ├── raw/                         # Raw physiological data
 │   ├── processed/                   # Processed data ready for the model
-│   └── ...                          # Other intermediate data directories
+│   └── ...
 ├── src/
 │   ├── models/
-│   │   └── lstm_ae.py               # LSTM Autoencoder model definition
+│   │   ├── lstm_ae.py               # Model definitions
+│   │   ├── tcn_ae.py
+│   │   └── transformer_ae.py
 │   ├── data/
 │   │   └── physiological_loader.py  # Data loader for PyTorch
-│   ├── utils/
-│   │   ├── train_utils.py           # Training and validation helper functions
-│   │   └── ...
-│   └── ...
+│   └── utils/
+│       └── train_utils.py           # Training and validation helpers
 ├── scripts/
-│   ├── preprocess_data_raw.py       # Script for initial data preprocessing
-│   ├── general_lstm_ae.py           # Script to train the general model
-│   ├── pure_lstm_ae.py              # Script to train personalized models
-│   └── ...
+│   ├── preprocessing/
+│   │   └── initial_preprocessing.py # Main script for data prep and feature extraction
+│   ├── training/
+│   │   └── general/                 # Scripts for training general models
+│   └── evaluation/
+│       └── evaluate_tcn_ae.py       # Scripts for evaluating trained models
 ├── models/                          # Saved model checkpoints
-├── results/                         # Training results, logs, and plots
-└── tests/                           # Unit and integration tests
+└── results/                         # Training results, logs, and plots
 ```
 
 ## Setup and Installation
@@ -72,58 +72,51 @@ early-disease-anomaly-detection/
 
 ## Data Preparation
 
-The data preparation process involves several steps, executed by scripts in the `scripts/` directory. The exact sequence and configuration will depend on the specifics of your raw data.
+The data preparation process involves several steps, executed by scripts in the `scripts/preprocessing` directory.
 
-1.  **Initial Preprocessing:**
+1.  **Initial Preprocessing & Feature Extraction:**
+    This step reads the raw data, performs cleaning, segments the data into windows, and extracts a comprehensive feature set.
+
     ```bash
-    python scripts/preprocess_data_raw.py
+    python scripts/preprocessing/initial_preprocessing.py --participant [participant_id]
     ```
-2.  **Feature Engineering :**
+    *(You can also use `initial_preprocessing_2.py` for the experimental 60s window and advanced HRV features.)*
+
+2.  **Feature Labeling:**
+    This step labels the extracted features based on the session type (e.g., stress vs. normal).
+
     ```bash
-    python scripts/preprocess_feature_engineering.py
+    python scripts/preprocessing/label_features.py --participant [participant_id]
     ```
-3.  **Normalization:**
+    *(YStress data is used as proxies to determine non-baseline physiological states, consequenctly enabling model evaluation with AUC-PR, and F1-Scores(with precision and recall))*
+3.  **Normalization and Data Splitting:**
+    This final step normalizes the labeled features and splits the data into training, validation, and test sets.
+
     ```bash
-    python scripts/normalize.py
+    python scripts/preprocessing/data_preparation.py --participant [participant_id]
     ```
 
-*Note: You may need to adjust the paths and parameters in the scripts or the `config/config.yaml` file to match your dataset.*
+*Note: You may need to adjust the paths and parameters in the scripts or config files to match your dataset.*
 
-## Training the Model
+## Training the Models
 
-You can train either a general model or personalized models.
+You can train generalized models on data from multiple participants or personalized models for each individual. Scripts for each model type are located in `scripts/training/`.
 
-### General Model
-
-To train a model on data from multiple participants, run the `general_lstm_ae.py` script:
+### Example: Training a General TCN Model
 
 ```bash
-python scripts/general_lstm_ae.py
+python scripts/training/general/general_tcn_ae.py
 ```
 
-This will train the model using the participants specified in the script and save the checkpoints, results, and logs in the `results/lstm_ae/general/` directory.
-
-### Personalized Models
-
-To train a separate model for each participant, use the `pure_lstm_ae.py` script. This script will iterate through the specified participants and train a dedicated model for each one.
-
-```bash
-python scripts/pure_lstm_ae.py
-```
-
-Checkpoints and results for personalized models will be saved in subdirectories within `results/lstm_ae/pure/`.
+This will train the model using the participants specified in the script and save the checkpoints and results in the `results/tcn_ae/general/` directory. Similar scripts exist for LSTM and Transformer models.
 
 ## Evaluation
 
-To evaluate the performance of a trained model, use the `evaluate_lstm_ae.py` script. You will need to provide the path to the model checkpoint and the data you want to evaluate.
+To evaluate a trained model, use the corresponding evaluation script from `scripts/evaluation/`. You will need to provide the path to the model checkpoint.
 
 ```bash
-python scripts/evaluate_lstm_ae.py --model_path path/to/your/model.pth --data_path path/to/your/data
+python scripts/evaluation/evaluate_tcn_ae.py --model_path path/to/your/model.pth
 ```
-
-## Configuration
-
-The `config/config.yaml` file is used to manage hyperparameters and settings for the training and data processing scripts. This allows for easy experimentation and consistent configuration across the project.
 
 ## Dependencies
 
@@ -136,3 +129,6 @@ The main dependencies for this project are listed in `requirements.txt` and incl
 -   `seaborn`
 -   `torch`
 -   `pyyaml`
+-   `pyhrv`
+-   `pytest`
+-   `jupyter`
