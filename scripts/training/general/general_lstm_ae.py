@@ -25,6 +25,15 @@ BEST_CONFIG_PATH   = f"config/lstm_config.json"
 CHECKPOINT_DIR     = f"results/lstm_ae/general"
 FIGS_DIR           = os.path.join(CHECKPOINT_DIR, "figs")
 
+# Load data_params from config
+with open("config/lstm_config.json", 'r') as f:
+    config = json.load(f)
+DATA_PARAMS = config.get("data_params", {
+    "train": {"sequence_length": 24, "overlap": 0.5},
+    "val": {"sequence_length": 24, "overlap": 0.0},
+    "test": {"sequence_length": 24, "overlap": 0.0}
+})
+
 # ── Hyperparam search settings ──
 HYPERPARAM_SPACE = {
     "hidden_size": [32, 64, 128],
@@ -35,17 +44,22 @@ SEARCH_EPOCHS    = 50
 FINAL_EPOCHS     = 200
 PATIENCE         = 10
 
-def train_and_evaluate(hidden_size, lr, num_layers, num_epochs=SEARCH_EPOCHS):
+def train_and_evaluate(hidden_size, lr, num_layers, data_params, num_epochs=SEARCH_EPOCHS):
     """Train for up to num_epochs with early stopping; return best val loss."""
+    # Get sequence length from data_params
+    sequence_length = data_params['train']['sequence_length']
+    
     model     = MaskedLSTMAutoencoder(input_size=43,
                                       hidden_size=hidden_size,
-                                      num_layers=num_layers)
+                                      num_layers=num_layers,
+                                      sequence_length=sequence_length)
     optimizer = torch.optim.Adam(model.parameters(), lr=lr, weight_decay=1e-4)
     loss_fn   = MaskedMSELoss()
 
     loader    = PhysiologicalDataLoader(DATA_PATH)
     train_loader, val_loader, _ = loader.create_general_loaders(
         PARTICIPANTS,
+        data_params=data_params,
         filter_stress_train=True,
         filter_stress_val=True
     )
@@ -77,7 +91,7 @@ def do_grid_search():
             HYPERPARAM_SPACE["hidden_size"],
             HYPERPARAM_SPACE["lr"],
             HYPERPARAM_SPACE["num_layers"]):
-        val = train_and_evaluate(hs, lr, nl)
+        val = train_and_evaluate(hs, lr, nl, DATA_PARAMS)
         print(f"[SEARCH] hidden_size={hs}, lr={lr:.0e}, num_layers={nl} → val_loss={val:.4f}")
         if val < best_score:
             best_score  = val
@@ -88,15 +102,20 @@ def do_grid_search():
 
 def train_final(hidden_size, lr, num_layers):
     """Train a final model using the best hyperparams, with checkpoints & loss plotting."""
+    # Get sequence length from data_params
+    sequence_length = DATA_PARAMS['train']['sequence_length']
+    
     model     = MaskedLSTMAutoencoder(input_size=43,
                                       hidden_size=hidden_size,
-                                      num_layers=num_layers)
+                                      num_layers=num_layers,
+                                      sequence_length=sequence_length)
     optimizer = torch.optim.Adam(model.parameters(), lr=lr, weight_decay=1e-4)
     loss_fn   = MaskedMSELoss()
 
     loader    = PhysiologicalDataLoader(DATA_PATH)
     train_loader, val_loader, _ = loader.create_general_loaders(
         PARTICIPANTS,
+        data_params=DATA_PARAMS,
         filter_stress_train=True,
         filter_stress_val=True
     )

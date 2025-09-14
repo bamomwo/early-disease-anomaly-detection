@@ -109,10 +109,19 @@ def main():
     else:
         input_size = args.input_size
     
+    # Get data_params from config
+    data_params = model_config.get("data_params")
+    if data_params is None:
+        raise ValueError("data_params not found in config file. Please ensure lstm_config.json contains data_params.")
+    
+    # Get sequence length from data_params
+    sequence_length = data_params['train']['sequence_length']
+    
     model = MaskedLSTMAutoencoder(
         input_size=input_size, 
         hidden_size=model_config["hidden_size"], 
-        num_layers=model_config["num_layers"]
+        num_layers=model_config["num_layers"],
+        sequence_length=sequence_length
     )
     
     ckpt = torch.load(args.model_path, map_location=device)
@@ -127,6 +136,7 @@ def main():
     if args.model_type in ["pure", "personalized"]:
         _, val_loader, test_loader = loader_factory.create_personalized_loaders(
             args.participant,
+            data_params=data_params,
             filter_stress_val=False, # mixed data for thresholding
             filter_stress_test=False # mixed data for testing
         )
@@ -134,6 +144,7 @@ def main():
     else:
         _, val_loader, test_loader = loader_factory.create_general_loaders(
             args.participants,
+            data_params=data_params,
             filter_stress_val=False, # mixed data for thresholding
             filter_stress_test=False # mixed data for testing
         )

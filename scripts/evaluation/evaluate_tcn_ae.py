@@ -42,8 +42,6 @@ def main():
     parser.add_argument("--data-path", default="data/normalized_stratified")
     parser.add_argument("--figs-dir", default=None,
                         help="Directory to save evaluation figures")
-    parser.add_argument("--input-size", type=int, default=None,
-                        help="Input size for the model (auto-detected if not provided)")
     args = parser.parse_args()
 
     # Validate arguments based on model type
@@ -94,35 +92,13 @@ def main():
         with open("config/best_config.json") as f:
             model_config = json.load(f)
 
-    # ── 1. Load trained model ──
-    # Determine input size
-    if args.input_size is None:
-        # Try to get input size from config or determine from data
-        input_size = model_config.get("input_size", 43)  # fallback to 43
-    else:
-        input_size = args.input_size
-    
-    model = TCNAutoencoder(
-        input_size=input_size, 
-        latent_size=model_config["latent_size"],
-        num_levels=model_config["num_levels"],
-        kernel_size=model_config["kernel_size"]
-    )
-    
-    ckpt = torch.load(args.model_path, map_location=device)
-    state_dict = ckpt.get("model_state_dict", ckpt)
-    model.load_state_dict(state_dict)
-    model.to(device)
-    model.eval()
-
-    # ── 2. Prepare loaders ──
+    # ── 1. Prepare loaders ──
     loader_factory = PhysiologicalDataLoader(args.data_path)
     
     if args.model_type in ["pure", "personalized"]:
-        data_params = model_config.get("data_params", {
-            "val": {"sequence_length": 24, "overlap": 0.2},
-            "test": {"sequence_length": 24, "overlap": 0.2}
-        })
+        data_params = model_config.get("data_params")
+        if data_params is None:
+            raise ValueError("data_params not found in config file. Please ensure tcn_config.json contains data_params.")
         _, val_loader, test_loader = loader_factory.create_personalized_loaders(
             args.participant,
             data_params=data_params,
@@ -137,6 +113,27 @@ def main():
             filter_stress_test=False # mixed data for testing
         )
         participants_to_evaluate = args.participants
+
+    # Determine input size dynamically
+    try:
+        input_size = val_loader.dataset.get_feature_info()['n_features']
+    except (IndexError, KeyError):
+        print(f"Error: Could not determine input size from the data. Aborting.")
+        return
+
+    # ── 2. Load trained model ──
+    model = TCNAutoencoder(
+        input_size=input_size, 
+        latent_size=model_config["latent_size"],
+        num_levels=model_config["num_levels"],
+        kernel_size=model_config["kernel_size"]
+    )
+    
+    ckpt = torch.load(args.model_path, map_location=device)
+    state_dict = ckpt.get("model_state_dict", ckpt)
+    model.load_state_dict(state_dict)
+    model.to(device)
+    model.eval()
 
     loss_fn = MaskedMSELoss()
 

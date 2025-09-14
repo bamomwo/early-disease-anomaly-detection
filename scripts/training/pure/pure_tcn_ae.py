@@ -37,8 +37,8 @@ PATIENCE         = 10
 def train_and_evaluate(participant, data_path, latent_size, lr, num_levels, kernel_size, sequence_length, overlap, num_epochs=SEARCH_EPOCHS):
     data_params = {
         "train": {"sequence_length": sequence_length, "overlap": overlap},
-        "val": {"sequence_length": sequence_length, "overlap": 0.2},
-        "test": {"sequence_length": sequence_length, "overlap": 0.2},
+        "val": {"sequence_length": sequence_length, "overlap": overlap},
+        "test": {"sequence_length": sequence_length, "overlap": overlap},
     }
 
     loader    = PhysiologicalDataLoader(data_path)
@@ -110,8 +110,8 @@ def do_grid_search(participant, data_path):
                 "kernel_size": ks,
                 "data_params": {
                     "train": {"sequence_length": sl, "overlap": ov},
-                    "val": {"sequence_length": sl, "overlap": 0.2},
-                    "test": {"sequence_length": sl, "overlap": 0.2}
+                    "val": {"sequence_length": sl, "overlap": ov},
+                    "test": {"sequence_length": sl, "overlap": ov}
                 }
             }
 

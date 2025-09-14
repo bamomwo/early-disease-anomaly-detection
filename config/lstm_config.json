@@ -1,5 +1,19 @@
 {
-  "hidden_size": 64,
+  "hidden_size": 128,
   "num_layers": 1,
-  "lr": 0.001
+  "lr": 0.001, 
+  "data_params": {
+    "train": {
+      "sequence_length": 24,
+      "overlap": 0.5
+    },
+    "val": {
+      "sequence_length": 24,
+      "overlap": 0.0
+    },
+    "test": {
+      "sequence_length": 24,
+      "overlap": 0.0
+    }
+  }
 } 

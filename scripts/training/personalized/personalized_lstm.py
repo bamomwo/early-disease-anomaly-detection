@@ -32,11 +32,25 @@ def main():
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
+    # ------------------- LOAD CONFIG ------------------- #
+    # Load config to get sequence length
+    with open("config/lstm_config.json", 'r') as f:
+        config = json.load(f)
+    data_params = config.get("data_params", {
+        "train": {"sequence_length": 24, "overlap": 0.5},
+        "val": {"sequence_length": 24, "overlap": 0.0},
+        "test": {"sequence_length": 24, "overlap": 0.0}
+    })
+
     # ------------------- LOAD MODEL ------------------- #
+    # Get sequence length from config
+    sequence_length = data_params['train']['sequence_length']
+    
     model = MaskedLSTMAutoencoder(
         input_size=input_size,
         hidden_size=hidden_size,
         num_layers=num_layers,
+        sequence_length=sequence_length
         #dropout=dropout
     )
 
@@ -49,9 +63,11 @@ def main():
     #     param.requires_grad = False
 
     # ------------------- PREPARE DATA ------------------- #
+    
     loader_factory = PhysiologicalDataLoader("data")
     train_loader, val_loader, _ = loader_factory.create_personalized_loaders(
         participant,
+        data_params=data_params,
         filter_stress_train=True,
         filter_stress_val=True
     )
