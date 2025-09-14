@@ -7,3 +7,4 @@ jupyter>=1.0.0
 pytest>=6.2.5
 pyyaml>=5.4.1
 pyhrv
+peakutils

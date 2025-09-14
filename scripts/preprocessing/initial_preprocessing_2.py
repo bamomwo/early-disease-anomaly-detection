@@ -5,11 +5,12 @@ import logging
 import argparse
 from pathlib import Path
 import scipy.signal
+import scipy.stats
 from scipy.signal import butter, filtfilt
 from typing import Dict, List, Tuple, Optional
 import warnings
 from pyhrv.frequency_domain import welch_psd
-from pyhrv.non_linear import poincare, sample_entropy
+from pyhrv.nonlinear import poincare, sample_entropy
 warnings.filterwarnings('ignore')
 
 # Configure logging
@@ -377,19 +378,49 @@ class BiosignalPreprocessor:
                                       window_start: pd.Timestamp) -> Optional[Dict]:
         """Extract features from a single window."""
         features = {'timestamp': window_start}
-        
+        acc_features, hrv_features, eda_features, bvp_features = {}, {}, {}, {}
+
         try:
+            # --- Step 1: Standalone Feature Extraction ---
+            
+            # Accelerometer Features (must be calculated first for context)
+            acc_cols = ['ACC_X', 'ACC_Y', 'ACC_Z']
+            if all(col in window_data.columns for col in acc_cols):
+                acc_features = self._calculate_acc_features(window_data[acc_cols])
+                features.update(acc_features)
+
             # HRV Features
-            if 'IBI' in window_data.columns:
+            # HRV Features
+            hrv_feature_names = [
+                'hrv_mean_ibi', 'hrv_sdnn', 'hrv_rmssd', 'hrv_pnn50', 'hrv_lf', 'hrv_hf',
+                'hrv_lf_hf_ratio', 'hrv_sd1', 'hrv_sd2', 'hrv_sd1_sd2_ratio', 'hrv_sampen'
+            ]
+            try:
+                MIN_IBI_SAMPLES = 30  # Stricter validation for reliable HRV calculation
+
+                if 'IBI' not in window_data.columns:
+                    raise ValueError("No IBI data in window")
+
                 ibi_values = window_data['IBI'].dropna()
-                if len(ibi_values) >= 2:
-                    hrv_features = self._calculate_hrv_features(ibi_values)
-                    features.update(hrv_features)
+                if len(ibi_values) < MIN_IBI_SAMPLES:
+                    raise ValueError(f"Insufficient IBI samples: got {len(ibi_values)}, require {MIN_IBI_SAMPLES}")
+
+                # If checks pass, calculate features
+                hrv_features = self._calculate_hrv_features(ibi_values)
+                features.update(hrv_features)
+
+            except Exception as e:
+                logging.debug(f"HRV calculation failed for window {window_start}: {e}. Filling HRV features with NaN.")
+                # Ensure hrv_features is empty so context-aware features are skipped
+                hrv_features = {} 
+                # Fill the main features dict with NaNs
+                for feat in hrv_feature_names:
+                    features[feat] = np.nan
             
             # Heart Rate Features
             if 'HR' in window_data.columns:
                 hr_data = window_data['HR'].dropna()
-                if len(hr_data) > 0:
+                if not hr_data.empty:
                     features.update({
                         'hr_mean': hr_data.mean(),
                         'hr_std': hr_data.std(),
@@ -401,7 +432,7 @@ class BiosignalPreprocessor:
             # Temperature Features
             if 'TEMP' in window_data.columns:
                 temp_data = window_data['TEMP'].dropna()
-                if len(temp_data) > 0:
+                if not temp_data.empty:
                     features.update({
                         'temp_mean': temp_data.mean(),
                         'temp_std': temp_data.std(),
@@ -410,28 +441,24 @@ class BiosignalPreprocessor:
                         'temp_range': temp_data.max() - temp_data.min()
                     })
             
-            # Accelerometer Features
-            acc_cols = ['ACC_X', 'ACC_Y', 'ACC_Z']
-            if all(col in window_data.columns for col in acc_cols):
-                acc_features = self._calculate_acc_features(window_data[acc_cols])
-                features.update(acc_features)
-            
             # EDA Features
             if 'EDA' in window_data.columns:
                 eda_data = window_data['EDA'].dropna()
-                if len(eda_data) > 1:  # Need at least 2 points for advanced features
+                if len(eda_data) > 1:
                     eda_features = self._calculate_eda_features(eda_data)
                     features.update(eda_features)
             
-            # BVP Morphological Features (optimized)
+            # BVP Morphological Features
             if 'BVP' in window_data.columns:
                 bvp_data = window_data['BVP'].dropna()
-                if len(bvp_data) >= self.window_size * 32:  # Minimum samples for reliable morphology
+                if len(bvp_data) >= self.window_size * self.sampling_rates['BVP'] * self.min_data_threshold:
                     bvp_features = self._calculate_bvp_morphological_features(bvp_data)
                     features.update(bvp_features)
-            
-            # Context-aware features
-            context_features = self._calculate_context_aware_features(window_data)
+
+            # --- Step 2: Context-Aware Feature Extraction ---
+            context_features = self._calculate_context_aware_features(
+                window_data, acc_features, hrv_features, eda_features
+            )
             features.update(context_features)
             
             return features
@@ -474,7 +501,7 @@ class BiosignalPreprocessor:
             poincare_results = poincare(nni=ibi_values_ms, show=False, mode='dev')
             
             # Non-linear Sample Entropy feature
-            sampen_results = sample_entropy(nni=ibi_values_ms, show=False, mode='dev')
+            sampen_results = sample_entropy(nni=ibi_values_ms)
 
             # Update features dictionary with new results
             features.update({
@@ -504,40 +531,69 @@ class BiosignalPreprocessor:
     
     def _calculate_acc_features(self, acc_data: pd.DataFrame) -> Dict:
         """
-        Calculate accelerometer features - only magnitude-based features are retained.
-        Ensures magnitude is calculated per sample, then aggregated over the window.
-        
-        Note: Raw ACC data is in 1/64g units, so we convert to g-force units first.
+        Calculate comprehensive accelerometer features including magnitude, orientation,
+        and frequency-domain characteristics.
         """
-        # Verify we have all required columns
+        features = {}
         required_cols = ['ACC_X', 'ACC_Y', 'ACC_Z']
         if not all(col in acc_data.columns for col in required_cols):
             return {}
-        
-        # Convert raw accelerometer data from 1/64g units to g-force units
-        # Raw data format: 1/64g (so divide by 64 to get actual g values)
+
+        # Convert to g-force units
         acc_x_g = acc_data['ACC_X'].fillna(0) / 64.0
         acc_y_g = acc_data['ACC_Y'].fillna(0) / 64.0
         acc_z_g = acc_data['ACC_Z'].fillna(0) / 64.0
+
+        # --- Orientation / Posture Features ---
+        mean_x, mean_y, mean_z = acc_x_g.mean(), acc_y_g.mean(), acc_z_g.mean()
+        features.update({
+            'acc_x_mean': mean_x,
+            'acc_y_mean': mean_y,
+            'acc_z_mean': mean_z,
+            'acc_pitch': np.arctan2(mean_x, np.sqrt(mean_y**2 + mean_z**2)) * (180 / np.pi),
+            'acc_roll': np.arctan2(mean_y, mean_z) * (180 / np.pi) if mean_z != 0 else 0
+        })
+
+        # --- Dynamics / Smoothness Features ---
+        features.update({
+            'acc_x_std': acc_x_g.std(),
+            'acc_y_std': acc_y_g.std(),
+            'acc_z_std': acc_z_g.std()
+        })
         
-        # Calculate magnitude per sample in g-force units
-        # For each time point: magnitude = sqrt(x² + y² + z²)
+        # Jerk (rate of change of acceleration)
+        jerk_x = np.diff(acc_x_g, prepend=0)
+        jerk_y = np.diff(acc_y_g, prepend=0)
+        jerk_z = np.diff(acc_z_g, prepend=0)
+        jerk_magnitude = np.sqrt(jerk_x**2 + jerk_y**2 + jerk_z**2)
+        features['acc_jerk_magnitude_mean'] = np.mean(jerk_magnitude)
+
+        # --- Magnitude-based Features (existing) ---
         acc_magnitude = np.sqrt(acc_x_g**2 + acc_y_g**2 + acc_z_g**2)
-        
-        # Remove zero padding (samples where all axes were NaN/0)
-        acc_magnitude = acc_magnitude[acc_magnitude > 0]
-        
-        if len(acc_magnitude) == 0:
-            return {}
-        
-        # Calculate only the important magnitude-based features (now in g-force units)
-        features = {
-            'acc_magnitude_mean': acc_magnitude.mean(),
-            'acc_magnitude_std': acc_magnitude.std(),
-            'acc_magnitude_max': acc_magnitude.max(),
-            'acc_magnitude_min': acc_magnitude.min(),
-            'acc_activity_level': self._classify_activity_level(acc_magnitude.mean())
-        }
+        acc_magnitude_no_zeros = acc_magnitude[acc_magnitude > 0]
+        if len(acc_magnitude_no_zeros) > 0:
+            mag_mean = acc_magnitude_no_zeros.mean()
+            features.update({
+                'acc_magnitude_mean': mag_mean,
+                'acc_magnitude_std': acc_magnitude_no_zeros.std(),
+                'acc_magnitude_max': acc_magnitude_no_zeros.max(),
+                'acc_magnitude_min': acc_magnitude_no_zeros.min(),
+                'acc_activity_level': self._classify_activity_level(mag_mean)
+            })
+
+            # --- Frequency-Domain Features (from magnitude) ---
+            fs = self.sampling_rates['ACC_X']
+            if len(acc_magnitude_no_zeros) > fs: # Need enough data for FFT
+                try:
+                    freqs, psd = scipy.signal.welch(acc_magnitude_no_zeros, fs=fs, nperseg=min(len(acc_magnitude_no_zeros), 256))
+                    # Normalize PSD
+                    psd_norm = psd / np.sum(psd) if np.sum(psd) > 0 else psd
+                    
+                    features['acc_dom_freq'] = freqs[np.argmax(psd)]
+                    features['acc_spectral_entropy'] = scipy.stats.entropy(psd_norm)
+                except Exception:
+                    features['acc_dom_freq'] = np.nan
+                    features['acc_spectral_entropy'] = np.nan
         
         return features
     
@@ -569,7 +625,7 @@ class BiosignalPreprocessor:
     
     def _calculate_eda_features(self, eda_data: pd.Series) -> Dict:
         """
-        Calculate advanced EDA features including tonic and phasic components.
+        Calculate advanced EDA features including tonic, phasic, and SCR dynamics.
         """
         features = {
             'eda_mean': eda_data.mean(),
@@ -583,22 +639,18 @@ class BiosignalPreprocessor:
         signal = eda_data.values
         
         try:
-            # Tonic component (SCL) - low-pass filter to get the slow-moving trend
+            # Tonic component (SCL)
             nyq = 0.5 * fs
-            low = 0.1 / nyq  # Cutoff frequency for SCL
+            low = 0.1 / nyq
             b, a = butter(2, low, btype='low')
             scl = filtfilt(b, a, signal)
             
-            # EDA slope
             time_seconds = len(signal) / fs
             if time_seconds > 0:
                 features['eda_slope'] = (scl[-1] - scl[0]) / time_seconds
 
-            # Phasic component (SCR) - band-pass filter to isolate rapid changes
+            # Phasic component (SCR)
             low_scr = 0.05 / nyq
-            # The high cutoff must be strictly less than the Nyquist frequency (nyq).
-            # The original value of 2.0 was equal to nyq for EDA (fs=4Hz), causing an error.
-            # We set it to a value slightly below nyq.
             high_scr_freq = 1.99
             high_scr = high_scr_freq / nyq
             b_scr, a_scr = butter(4, [low_scr, high_scr], btype='band')
@@ -607,38 +659,39 @@ class BiosignalPreprocessor:
             # Find peaks (SCRs)
             peaks, properties = scipy.signal.find_peaks(
                 scr, 
-                height=0.01,  # Min height in micro-siemens
-                distance=fs,  # Min 1-second distance between peaks
+                height=0.01,
+                distance=fs,
                 width=True
             )
             
             if len(peaks) > 0:
-                features['num_scr_peaks'] = len(peaks)
-                features['mean_scr_amplitude'] = np.mean(properties['peak_heights'])
-                
-                # Width is in samples, convert to seconds
                 peak_widths_sec = properties['widths'] / fs
-                features['mean_scr_peak_width'] = np.mean(peak_widths_sec)
                 
-                # Area under curve (amplitude * width)
-                areas = properties['peak_heights'] * peak_widths_sec
-                features['mean_scr_area'] = np.mean(areas)
+                # Approximate rise and recovery time as half the peak width
+                # This is a simplification; true recovery requires finding the half-amplitude point on the decay slope.
+                approx_rise_time = peak_widths_sec / 2
+                approx_recovery_time = peak_widths_sec / 2
+
+                features.update({
+                    'num_scr_peaks': len(peaks),
+                    'mean_scr_amplitude': np.mean(properties['peak_heights']),
+                    'mean_scr_peak_width': np.mean(peak_widths_sec),
+                    'mean_scr_area': np.mean(properties['peak_heights'] * peak_widths_sec),
+                    'mean_scr_rise_time': np.mean(approx_rise_time),
+                    'mean_scr_recovery_time': np.mean(approx_recovery_time)
+                })
             else:
-                # If no peaks, set features to 0
-                features['num_scr_peaks'] = 0
-                features['mean_scr_amplitude'] = 0
-                features['mean_scr_peak_width'] = 0
-                features['mean_scr_area'] = 0
+                # If no peaks, set all peak-related features to 0
+                for feat in ['num_scr_peaks', 'mean_scr_amplitude', 'mean_scr_peak_width', 'mean_scr_area', 'mean_scr_rise_time', 'mean_scr_recovery_time']:
+                    features[feat] = 0
 
         except Exception as e:
             logging.warning(f"Could not extract advanced EDA features for window: {e}")
-            # Fallback to NaN for advanced features if calculation fails
+            # Fallback to NaN/0 for advanced features if calculation fails
             features['eda_slope'] = np.nan
-            features['num_scr_peaks'] = 0
-            features['mean_scr_amplitude'] = 0
-            features['mean_scr_peak_width'] = 0
-            features['mean_scr_area'] = 0
-            
+            for feat in ['num_scr_peaks', 'mean_scr_amplitude', 'mean_scr_peak_width', 'mean_scr_area', 'mean_scr_rise_time', 'mean_scr_recovery_time']:
+                features[feat] = 0
+                
         return features
 
     
@@ -649,7 +702,7 @@ class BiosignalPreprocessor:
         """
         try:
             # Apply bandpass filter
-            fs = 64  # BVP sampling rate
+            fs = self.sampling_rates['BVP']
             filtered_bvp = self._bandpass_filter(bvp_data.values, fs)
             
             # Basic statistical features first
@@ -669,25 +722,32 @@ class BiosignalPreprocessor:
                 prominence=np.std(filtered_bvp) * 0.1
             )
             
-            if len(peaks) < 2:
-                return features
-            
-            # Calculate morphological features for each pulse
-            pulse_features = self._extract_pulse_features(filtered_bvp, peaks, fs)
-            
-            if not pulse_features or not pulse_features['amplitudes']:
-                return features
-            
-            # Aggregate morphological features
-            features.update({
-                'bvp_systolic_amp_mean': np.mean(pulse_features['amplitudes']),
-                'bvp_systolic_amp_std': np.std(pulse_features['amplitudes']),
-                'bvp_pulse_width_mean': np.mean(pulse_features['widths']),
-                'bvp_pulse_width_std': np.std(pulse_features['widths']),
-                'bvp_rise_time_mean': np.mean(pulse_features['rise_times']),
-                'bvp_rise_time_std': np.std(pulse_features['rise_times']),
-                'bvp_pulse_rate': len(peaks) / (len(bvp_data) / fs) * 60  # beats per minute
-            })
+            if len(peaks) >= 2:
+                # Calculate morphological features for each pulse
+                pulse_features = self._extract_pulse_features(filtered_bvp, peaks, fs)
+                
+                if pulse_features and pulse_features['amplitudes']:
+                    # Aggregate morphological features
+                    features.update({
+                        'bvp_systolic_amp_mean': np.mean(pulse_features['amplitudes']),
+                        'bvp_systolic_amp_std': np.std(pulse_features['amplitudes']),
+                        'bvp_pulse_width_mean': np.mean(pulse_features['widths']),
+                        'bvp_pulse_width_std': np.std(pulse_features['widths']),
+                        'bvp_rise_time_mean': np.mean(pulse_features['rise_times']),
+                        'bvp_rise_time_std': np.std(pulse_features['rise_times']),
+                        'bvp_pulse_rate': len(peaks) / (len(bvp_data) / fs) * 60  # beats per minute
+                    })
+
+            # Add BVP respiratory power
+            try:
+                freqs, psd = scipy.signal.welch(filtered_bvp, fs=fs, nperseg=min(len(filtered_bvp), 256))
+                resp_band = (freqs >= 0.15) & (freqs <= 0.4)
+                if np.any(resp_band):
+                    features['bvp_respiratory_power'] = np.sum(psd[resp_band])
+                else:
+                    features['bvp_respiratory_power'] = np.nan
+            except Exception:
+                features['bvp_respiratory_power'] = np.nan
             
             return features
             
@@ -748,35 +808,68 @@ class BiosignalPreprocessor:
         b, a = butter(2, [low, high], btype='band')
         return filtfilt(b, a, signal)
     
-    def _calculate_context_aware_features(self, window_data: pd.DataFrame) -> Dict:
-        """Calculate context-aware features for activity normalization."""
+    def _calculate_context_aware_features(self, window_data: pd.DataFrame, acc_features: Dict, hrv_features: Dict, eda_features: Dict) -> Dict:
+        """
+        Calculate features that provide context by combining ACC with other signals.
+        """
         features = {}
-        
-        # Calculate ACC magnitude for normalization
-        acc_cols = ['ACC_X', 'ACC_Y', 'ACC_Z']
-        if all(col in window_data.columns for col in acc_cols):
-            acc_mag = np.sqrt(
-                window_data['ACC_X'].fillna(0)**2 + 
-                window_data['ACC_Y'].fillna(0)**2 + 
-                window_data['ACC_Z'].fillna(0)**2
-            )
-            acc_mag = acc_mag[acc_mag > 0]
-            
-            if len(acc_mag) > 0:
-                acc_mean = acc_mag.mean()
+        activity_level = acc_features.get('acc_activity_level', -1)
+
+        # --- Gated HRV Features ---
+        if hrv_features:
+            is_at_rest = (activity_level == 0)
+            features['hrv_hf_at_rest'] = hrv_features.get('hrv_hf') if is_at_rest else np.nan
+            features['hrv_rmssd_at_rest'] = hrv_features.get('hrv_rmssd') if is_at_rest else np.nan
+
+        # --- Gated EDA Features ---
+        if eda_features:
+            is_at_rest = (activity_level == 0)
+            features['scr_peaks_at_rest'] = eda_features.get('num_scr_peaks') if is_at_rest else np.nan
+
+        # --- Gated & Cross-Signal Temperature Features ---
+        temp_slope = np.nan
+        if 'TEMP' in window_data.columns:
+            temp_data = window_data['TEMP'].dropna()
+            if len(temp_data) > 1:
+                time_indices = np.arange(len(temp_data))
+                temp_slope = np.polyfit(time_indices, temp_data.values, 1)[0]
                 
-                # EDA to ACC ratio
-                if 'EDA' in window_data.columns:
-                    eda_mean = window_data['EDA'].mean()
-                    if not pd.isna(eda_mean) and acc_mean > 0.01:
-                        features['eda_acc_ratio'] = eda_mean / acc_mean
-                
-                # HR to ACC ratio
+                is_at_rest = (activity_level == 0)
+                features['temp_slope_resting'] = temp_slope if is_at_rest else np.nan
+                features['temp_slope_active'] = temp_slope if not is_at_rest and activity_level != -1 else np.nan
+
+                # HR-Temp Correlation
                 if 'HR' in window_data.columns:
-                    hr_mean = window_data['HR'].mean()
-                    if not pd.isna(hr_mean) and acc_mean > 0.01:
-                        features['hr_acc_ratio'] = hr_mean / acc_mean
-        
+                    hr_data = window_data['HR'].dropna()
+                    aligned_df = pd.concat([temp_data, hr_data], axis=1).dropna()
+                    if len(aligned_df) > 2:
+                        features['temp_hr_correlation'] = aligned_df['TEMP'].corr(aligned_df['HR'])
+                    else:
+                        features['temp_hr_correlation'] = np.nan
+                else:
+                    features['temp_hr_correlation'] = np.nan
+
+        # EDA-Temp Slope Ratio
+        eda_slope = eda_features.get('eda_slope')
+        if eda_slope is not None and not np.isnan(eda_slope) and not np.isnan(temp_slope) and eda_slope != 0:
+            features['temp_vs_eda_slope_ratio'] = temp_slope / eda_slope
+        else:
+            features['temp_vs_eda_slope_ratio'] = np.nan
+
+
+        # --- Existing Ratio Features ---
+        if 'HR' in window_data.columns and acc_features.get('acc_magnitude_mean') is not None:
+            hr_data = window_data['HR'].dropna()
+            acc_mean = acc_features.get('acc_magnitude_mean')
+            if not hr_data.empty and acc_mean > 0.01:
+                features['hr_acc_ratio'] = hr_data.mean() / acc_mean
+
+        if 'EDA' in window_data.columns and acc_features.get('acc_magnitude_mean') is not None:
+            eda_data = window_data['EDA'].dropna()
+            acc_mean = acc_features.get('acc_magnitude_mean')
+            if not eda_data.empty and acc_mean > 0.01:
+                features['eda_acc_ratio'] = eda_data.mean() / acc_mean
+                
         return features
 
 def process_participant(participant_dir: str, output_dir: str, 
@@ -827,10 +920,10 @@ def main():
     parser.add_argument('--participant', type=str, help='Specific participant ID to process')
     parser.add_argument('--data-dir', type=str, default='../../data/raw', 
                        help='Path to raw data directory (default: ../../data/raw)')
-    parser.add_argument('--output-dir', type=str, default='../../data/processed',
+    parser.add_argument('--output-dir', type=str, default='../../data/processed_new',
                        help='Output directory for processed features (default: processed_features)')
-    parser.add_argument('--window-size', type=int, default=10,
-                       help='Window size in seconds (default: 10)')
+    parser.add_argument('--window-size', type=int, default=60,
+                       help='Window size in seconds (default: 60)')
     parser.add_argument('--max-sessions', type=int, default=None,
                        help='Maximum number of sessions to process per participant (default: all sessions)')
     parser.add_argument('--verbose', '-v', action='store_true',
